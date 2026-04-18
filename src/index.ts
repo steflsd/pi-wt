@@ -395,7 +395,9 @@ async function promptForNewBranchName(
 
 async function listSessions(cwd: string): Promise<SessionInfo[]> {
 	try {
-		return (await SessionManager.list(cwd)).sort((left, right) => right.modified.getTime() - left.modified.getTime());
+		return (await SessionManager.list(cwd))
+			.filter((session) => !session.cwd || safeRealpath(session.cwd) === safeRealpath(cwd))
+			.sort((left, right) => right.modified.getTime() - left.modified.getTime());
 	} catch (error) {
 		if (isMissingFileError(error)) {
 			return [];
