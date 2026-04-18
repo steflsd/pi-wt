@@ -1,5 +1,5 @@
 import { realpathSync } from "node:fs";
-import { mkdir } from "node:fs/promises";
+import { mkdir, writeFile } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import {
 	type ExtensionAPI,
@@ -53,6 +53,8 @@ interface WorkspaceMenuChoice {
 	workspace?: WorkspaceTarget;
 }
 
+type SessionSelectionMode = "auto" | "pick" | "new";
+
 const WORKTREE_ROOT_FLAG = "wt-root";
 const DEFAULT_WORKTREE_ROOT = "../worktrees";
 
@@ -64,12 +66,13 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.registerCommand("wt", {
-		description: "List active workspaces or create a new worktree, then switch to a Pi session there",
-		handler: async (_args, ctx) => {
+		description: "Create or switch worktrees and continue the most recent session there by default",
+		handler: async (args, ctx) => {
 			try {
 				if (!ctx.hasUI) {
 					throw new Error("/wt requires a UI-capable mode");
 				}
+				const sessionMode = parseSessionSelectionMode(args);
 				const repo = await inspectRepo(pi, ctx.cwd);
 				if (!repo) {
 					ctx.ui.notify("/wt must be run inside a git repository", "error");
@@ -91,25 +94,7 @@ export default function (pi: ExtensionAPI) {
 				}
 
 				const sessions = await listSessions(workspace.cwd);
-				const action = await chooseSessionAction(ctx, workspace, sessions);
-				if (!action) {
-					ctx.ui.notify("Cancelled", "info");
-					return;
-				}
-
-				if (action.type === "continue-recent") {
-					await ctx.waitForIdle();
-					const result = await ctx.switchSession(action.session.path);
-					if (!result.cancelled) {
-						ctx.ui.notify(
-							`Switched to ${workspaceSummary(workspace)} · ${describeSession(action.session)}`,
-							"info",
-						);
-					}
-					return;
-				}
-
-				if (action.type === "pick-session") {
+				if (sessionMode === "pick" && sessions.length > 0) {
 					const selected = await chooseSession(ctx, workspace, sessions);
 					if (!selected) {
 						ctx.ui.notify("Cancelled", "info");
@@ -123,6 +108,18 @@ export default function (pi: ExtensionAPI) {
 					return;
 				}
 
+				if (sessionMode !== "new" && sessions.length > 0) {
+					await ctx.waitForIdle();
+					const result = await ctx.switchSession(sessions[0].path);
+					if (!result.cancelled) {
+						ctx.ui.notify(
+							`Switched to ${workspaceSummary(workspace)} · ${describeSession(sessions[0])}`,
+							"info",
+						);
+					}
+					return;
+				}
+
 				await ctx.waitForIdle();
 				const sessionManager = SessionManager.create(workspace.cwd);
 				const sessionFile = sessionManager.getSessionFile();
@@ -130,6 +127,7 @@ export default function (pi: ExtensionAPI) {
 					ctx.ui.notify("Failed to prepare session file", "error");
 					return;
 				}
+				await persistNewSessionHeader(sessionManager, sessionFile);
 				const result = await ctx.switchSession(sessionFile);
 				if (!result.cancelled) {
 					ctx.ui.notify(`Created new session in ${workspaceSummary(workspace)}`, "info");
@@ -144,6 +142,22 @@ export default function (pi: ExtensionAPI) {
 			}
 		},
 	});
+}
+
+async function persistNewSessionHeader(sessionManager: SessionManager, sessionFile: string): Promise<void> {
+	const header = sessionManager.getHeader();
+	if (!header) {
+		throw new Error("Failed to initialize session header");
+	}
+	await writeFile(sessionFile, `${JSON.stringify(header)}\n`, "utf8");
+}
+
+function parseSessionSelectionMode(args: string): SessionSelectionMode {
+	const normalized = args.trim().toLowerCase();
+	if (!normalized) return "auto";
+	if (["pick", "session", "sessions", "choose"].includes(normalized)) return "pick";
+	if (["new", "fresh"].includes(normalized)) return "new";
+	throw new Error("Usage: /wt [pick|new]");
 }
 
 function getConfiguredWorktreeRoot(pi: ExtensionAPI): string {
