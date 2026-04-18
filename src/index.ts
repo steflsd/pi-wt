@@ -112,10 +112,7 @@ export default function (pi: ExtensionAPI) {
 					await ctx.waitForIdle();
 					const result = await ctx.switchSession(sessions[0].path);
 					if (!result.cancelled) {
-						ctx.ui.notify(
-							`Switched to ${workspaceSummary(workspace)} · ${describeSession(sessions[0])}`,
-							"info",
-						);
+						ctx.ui.notify(`Switched to ${workspaceSummary(workspace)} · ${describeSession(sessions[0])}`, "info");
 					}
 					return;
 				}
@@ -287,23 +284,27 @@ async function chooseWorkspaceTarget(
 ): Promise<WorkspaceMenuChoice | undefined> {
 	const choices = new Map<string, WorkspaceMenuChoice>();
 	const options: string[] = [];
+	const resolvedWorktreeRoot = resolveWorktreeRoot(repo.mainCheckoutPath, worktreeRoot);
+	const existingWorktrees = repo.worktrees.filter(
+		(worktree) => !worktree.isCurrent && !worktree.isMainCheckout && isSubpathOf(worktree.path, resolvedWorktreeRoot),
+	);
 
-	for (const worktree of repo.worktrees) {
+	const createLabel = `Create new worktree…\n  base branch + new branch under ${resolvedWorktreeRoot}`;
+	choices.set(createLabel, { type: "create-worktree" });
+	options.push(createLabel);
+
+	for (const worktree of existingWorktrees) {
 		const workspace: WorkspaceTarget = {
 			cwd: worktree.path,
 			branch: worktree.branch,
-			kind: worktree.isCurrent ? "current" : worktree.isMainCheckout ? "main" : "worktree",
+			kind: "worktree",
 		};
 		const label = formatWorkspaceOption(worktree);
 		choices.set(label, { type: "workspace", workspace });
 		options.push(label);
 	}
 
-	const createLabel = `Create new worktree…\n  base branch + new branch under ${worktreeRoot}`;
-	choices.set(createLabel, { type: "create-worktree" });
-	options.push(createLabel);
-
-	const selected = await ctx.ui.select("Pick workspace or create a new one", options);
+	const selected = await ctx.ui.select("Create a new worktree or pick an existing one", options);
 	return selected ? choices.get(selected) : undefined;
 }
 
@@ -324,12 +325,7 @@ async function createWorktreeFlow(
 		return undefined;
 	}
 
-	const defaultPath = defaultWorktreePath(repo.mainCheckoutPath, worktreeRoot, newBranchName);
-	const targetPath = await promptForWorktreePath(ctx, repo.mainCheckoutPath, defaultPath);
-	if (!targetPath) {
-		ctx.ui.notify("Cancelled", "info");
-		return undefined;
-	}
+	const targetPath = defaultWorktreePath(repo.mainCheckoutPath, worktreeRoot, newBranchName);
 
 	const confirmed = await ctx.ui.confirm(
 		"Create worktree",
@@ -397,24 +393,6 @@ async function promptForNewBranchName(
 	}
 }
 
-async function promptForWorktreePath(
-	ctx: ExtensionCommandContext,
-	mainCheckoutPath: string,
-	defaultPath: string,
-): Promise<string | undefined> {
-	const entered = await ctx.ui.input("Worktree path override (leave blank for default)", defaultPath);
-	if (entered === undefined) {
-		return undefined;
-	}
-
-	const trimmed = entered.trim();
-	if (!trimmed) {
-		return defaultPath;
-	}
-
-	return safeRealpath(isAbsolute(trimmed) ? trimmed : resolve(mainCheckoutPath, trimmed));
-}
-
 async function listSessions(cwd: string): Promise<SessionInfo[]> {
 	try {
 		return (await SessionManager.list(cwd)).sort((left, right) => right.modified.getTime() - left.modified.getTime());
@@ -424,33 +402,6 @@ async function listSessions(cwd: string): Promise<SessionInfo[]> {
 		}
 		throw error;
 	}
-}
-
-async function chooseSessionAction(
-	ctx: ExtensionCommandContext,
-	workspace: WorkspaceTarget,
-	sessions: SessionInfo[],
-): Promise<
-	{ type: "continue-recent"; session: SessionInfo } | { type: "pick-session" } | { type: "new-session" } | undefined
-> {
-	const options: string[] = [];
-	if (sessions.length > 0) {
-		options.push(`Continue recent · ${describeSession(sessions[0])}`);
-		if (sessions.length > 1) {
-			options.push(`Pick session · ${sessions.length} sessions`);
-		}
-	}
-	options.push(`New session · ${workspaceSummary(workspace)}`);
-
-	const selected = await ctx.ui.select(`Session for ${workspaceSummary(workspace)}`, options);
-	if (!selected) return undefined;
-	if (selected.startsWith("Continue recent")) {
-		return { type: "continue-recent", session: sessions[0] };
-	}
-	if (selected.startsWith("Pick session")) {
-		return { type: "pick-session" };
-	}
-	return { type: "new-session" };
 }
 
 async function chooseSession(
@@ -507,8 +458,17 @@ function shortHead(head: string | null): string | null {
 }
 
 function defaultWorktreePath(mainCheckoutPath: string, worktreeRoot: string, branch: string): string {
-	const rootPath = isAbsolute(worktreeRoot) ? worktreeRoot : resolve(mainCheckoutPath, worktreeRoot);
-	return join(rootPath, sanitizeBranchForPath(branch));
+	return join(resolveWorktreeRoot(mainCheckoutPath, worktreeRoot), sanitizeBranchForPath(branch));
+}
+
+function resolveWorktreeRoot(mainCheckoutPath: string, worktreeRoot: string): string {
+	return isAbsolute(worktreeRoot) ? worktreeRoot : resolve(mainCheckoutPath, worktreeRoot);
+}
+
+function isSubpathOf(path: string, parentPath: string): boolean {
+	const normalizedPath = safeRealpath(path);
+	const normalizedParent = safeRealpath(parentPath);
+	return normalizedPath === normalizedParent || normalizedPath.startsWith(`${normalizedParent}/`);
 }
 
 function sanitizeBranchForPath(branch: string): string {

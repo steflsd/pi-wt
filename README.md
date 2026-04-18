@@ -19,7 +19,7 @@ Open Pi once, usually from your main checkout, then use `/wt` to either:
 So `/wt` does:
 
 1. pick or create a workspace
-2. continue or create a Pi session for that workspace
+2. continue the most recent Pi session for that workspace, or create one if none exists
 
 ## Workflow
 
@@ -49,7 +49,7 @@ Then it runs the equivalent of:
 git worktree add -b <new-branch> <path> <base-branch>
 ```
 
-and offers to continue or create a Pi session for that new workspace.
+and switches into the most recent Pi session for that new workspace, or creates one if none exists.
 
 ## Default worktree path
 
@@ -60,6 +60,18 @@ By default, new worktrees are created under:
 ```
 
 relative to the repo's main checkout.
+
+## Session behavior
+
+By default:
+
+- `/wt` continues the most recent session in the selected workspace
+- if no session exists yet, `/wt` creates one
+
+Optional modes:
+
+- `/wt pick` — choose from existing sessions in that workspace
+- `/wt new` — force creation of a fresh session in that workspace
 
 ## Configuration
 
