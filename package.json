@@ -39,10 +39,10 @@
 		"@mariozechner/pi-ai": "*"
 	},
 	"devDependencies": {
-		"@biomejs/biome": "2.3.5",
+		"@biomejs/biome": "2.4.12",
 		"@mariozechner/pi-coding-agent": "*",
-		"@types/node": "^24.0.0",
-		"typescript": "^5.9.0"
+		"@types/node": "^25.6.0",
+		"typescript": "^6.0.3"
 	},
 	"scripts": {
 		"format": "biome check --write .",
