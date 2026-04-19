@@ -26,7 +26,7 @@ export async function inspectRepo(pi: ExtensionAPI, cwd: string): Promise<RepoSt
 		exec(pi, "git", ["branch", "--show-current"], repoRoot),
 		exec(pi, "git", ["symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"], repoRoot),
 		exec(pi, "git", ["worktree", "list", "--porcelain"], repoRoot),
-		exec(pi, "git", ["for-each-ref", "--format=%(refname:short)", "refs/heads"], repoRoot),
+		exec(pi, "git", ["for-each-ref", "--sort=-committerdate", "--format=%(refname:short)", "refs/heads"], repoRoot),
 	]);
 
 	if (worktreeResult.code !== 0) {
@@ -45,17 +45,18 @@ export async function inspectRepo(pi: ExtensionAPI, cwd: string): Promise<RepoSt
 		worktrees.filter((worktree) => worktree.branch).map((worktree) => [worktree.branch as string, worktree.path]),
 	);
 
-	const branches = branchesResult.stdout
-		.split("\n")
-		.map((line) => line.trim())
-		.filter(Boolean)
-		.map((name) => ({
-			name,
-			isCurrent: name === currentBranch,
-			isDefault: name === defaultBranch,
-			worktreePath: worktreeMap.get(name) ?? null,
-		}))
-		.sort(compareBranches);
+	const branches = prioritizeBranches(
+		branchesResult.stdout
+			.split("\n")
+			.map((line) => line.trim())
+			.filter(Boolean)
+			.map((name) => ({
+				name,
+				isCurrent: name === currentBranch,
+				isDefault: name === defaultBranch,
+				worktreePath: worktreeMap.get(name) ?? null,
+			})),
+	);
 
 	return {
 		cwd: safeRealpath(cwd),
@@ -430,11 +431,11 @@ function compareWorktrees(left: WorktreeInfo, right: WorktreeInfo): number {
 	return workspaceBranchLabel(left).localeCompare(workspaceBranchLabel(right));
 }
 
-function compareBranches(left: BranchInfo, right: BranchInfo): number {
-	const leftPriority = left.isCurrent ? 0 : left.isDefault ? 1 : 2;
-	const rightPriority = right.isCurrent ? 0 : right.isDefault ? 1 : 2;
-	if (leftPriority !== rightPriority) return leftPriority - rightPriority;
-	return left.name.localeCompare(right.name);
+function prioritizeBranches(branches: BranchInfo[]): BranchInfo[] {
+	const current = branches.filter((branch) => branch.isCurrent);
+	const defaults = branches.filter((branch) => branch.isDefault && !branch.isCurrent);
+	const rest = branches.filter((branch) => !branch.isCurrent && !branch.isDefault);
+	return [...current, ...defaults, ...rest];
 }
 
 function workspaceBranchLabel(worktree: WorktreeInfo): string {

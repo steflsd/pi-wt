@@ -41,6 +41,8 @@ You will see:
 If you choose **Create new worktree…**, `pi-wt` asks for:
 
 1. **base branch**
+   - the picker shows the most recent local branches first
+   - if the branch you want is older, choose **Other branch…** and type its name
 2. **new branch name**
 3. confirmation
 
@@ -139,6 +141,7 @@ Example `.pi/settings.json`:
       { "name": "fix", "prefix": "fix/", "base": "main" },
       { "name": "spike", "prefix": "spike/" }
     ],
+    "branchPickerLimit": 12,
     "editorCommand": "cursor {{path}}",
     "terminalCommand": "open -a Terminal {{path}}"
   }
@@ -146,6 +149,10 @@ Example `.pi/settings.json`:
 ```
 
 When templates are present, `/wt` shows a lightweight template picker before the normal base-branch / branch-name prompts.
+
+`wt.branchPickerLimit` controls how many recent local branches are shown before falling back to **Other branch…**. If unset, the default is `12`.
+
+For compatibility, `wt.baseBranchPickerLimit` is still accepted as an older alias.
 
 For `/wt editor` and `/wt terminal`, `{{path}}` is replaced with the current worktree path. If the command does not include `{{path}}`, `pi-wt` appends the current worktree path automatically.
 

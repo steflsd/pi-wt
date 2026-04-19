@@ -8,7 +8,7 @@ import {
 	createWorktreeFlow,
 	getConfiguredSetupStep,
 	getConfiguredWorktreeRoot,
-	readProjectWorktreeTemplates,
+	readProjectWorktreeSettings,
 	workspaceSummary,
 } from "../worktrees.js";
 
@@ -23,7 +23,9 @@ export async function handleWorkspaceCommand(
 		return;
 	}
 
-	const menuChoice = await chooseWorkspaceTarget(ctx, repo, getConfiguredWorktreeRoot(pi));
+	const worktreeRoot = getConfiguredWorktreeRoot(pi);
+	const settings = readProjectWorktreeSettings(repo);
+	const menuChoice = await chooseWorkspaceTarget(ctx, repo, worktreeRoot);
 	if (!menuChoice) {
 		ctx.ui.notify("Cancelled", "info");
 		return;
@@ -36,9 +38,10 @@ export async function handleWorkspaceCommand(
 					pi,
 					ctx,
 					repo,
-					getConfiguredWorktreeRoot(pi),
+					worktreeRoot,
 					getConfiguredSetupStep(pi, repo),
-					readProjectWorktreeTemplates(repo),
+					settings.templates,
+					settings.branchPickerLimit,
 				);
 	if (!workspace) {
 		return;

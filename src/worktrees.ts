@@ -20,6 +20,9 @@ import {
 	WT_SETUP_FLAG,
 } from "./types.js";
 
+const DEFAULT_BASE_BRANCH_PICKER_LIMIT = 12;
+const OTHER_BASE_BRANCH_LABEL = "Other branch…\n  type an existing local branch name";
+
 export function getConfiguredWorktreeRoot(pi: ExtensionAPI): string {
 	const configured = pi.getFlag(WORKTREE_ROOT_FLAG);
 	return typeof configured === "string" && configured.trim().length > 0 ? configured.trim() : DEFAULT_WORKTREE_ROOT;
@@ -80,6 +83,7 @@ export async function createWorktreeFlow(
 	worktreeRoot: string,
 	setupStep: SetupStep | null,
 	templates: WorktreeTemplate[],
+	branchPickerLimit = DEFAULT_BASE_BRANCH_PICKER_LIMIT,
 ): Promise<WorkspaceTarget | undefined> {
 	const template = await chooseWorktreeTemplate(ctx, templates);
 	if (template === null) {
@@ -87,7 +91,7 @@ export async function createWorktreeFlow(
 		return undefined;
 	}
 
-	const baseBranch = await chooseBaseBranch(ctx, repo.branches, template?.base);
+	const baseBranch = await chooseBaseBranch(ctx, repo.branches, branchPickerLimit, template?.base);
 	if (!baseBranch) {
 		ctx.ui.notify("Cancelled", "info");
 		return undefined;
@@ -170,6 +174,7 @@ async function chooseWorktreeTemplate(
 async function chooseBaseBranch(
 	ctx: ExtensionCommandContext,
 	branches: BranchInfo[],
+	branchPickerLimit: number,
 	preferredBranchName?: string,
 ): Promise<BranchInfo | undefined> {
 	const preferred = preferredBranchName
@@ -179,10 +184,49 @@ async function chooseBaseBranch(
 		return preferred;
 	}
 
-	const labels = branches.map((branch) => formatBaseBranchOption(branch));
-	const byLabel = new Map(labels.map((label, index) => [label, branches[index]]));
+	const recentBranches = branches.slice(0, Math.max(1, branchPickerLimit));
+	const labels = recentBranches.map((branch) => formatBaseBranchOption(branch));
+	const byLabel = new Map(labels.map((label, index) => [label, recentBranches[index]]));
+	const hasMoreBranches = branches.length > recentBranches.length;
+	if (hasMoreBranches) {
+		labels.push(OTHER_BASE_BRANCH_LABEL);
+	}
+
 	const selected = await ctx.ui.select("Choose base branch", labels);
-	return selected ? byLabel.get(selected) : undefined;
+	if (!selected) {
+		return undefined;
+	}
+	if (selected === OTHER_BASE_BRANCH_LABEL) {
+		return promptForExistingBaseBranch(ctx, branches);
+	}
+	return byLabel.get(selected);
+}
+
+async function promptForExistingBaseBranch(
+	ctx: ExtensionCommandContext,
+	branches: BranchInfo[],
+): Promise<BranchInfo | undefined> {
+	const placeholder = branches.find((branch) => branch.isDefault)?.name ?? branches[0]?.name ?? "main";
+	while (true) {
+		const entered = await ctx.ui.input("Base branch name", placeholder);
+		if (entered === undefined) {
+			return undefined;
+		}
+
+		const branchName = normalizeBranchName(entered.trim());
+		if (!branchName) {
+			ctx.ui.notify("Base branch is required", "warning");
+			continue;
+		}
+
+		const branch = branches.find((candidate) => candidate.name === branchName);
+		if (!branch) {
+			ctx.ui.notify(`Unknown local branch: ${branchName}`, "warning");
+			continue;
+		}
+
+		return branch;
+	}
 }
 
 async function promptForNewBranchName(
@@ -217,7 +261,12 @@ async function promptForNewBranchName(
 export function readProjectWorktreeSettings(repo: RepoState): WorktreeProjectSettings {
 	const settingsPath = join(repo.mainCheckoutPath, ".pi", "settings.json");
 	if (!existsSync(settingsPath)) {
-		return { templates: [], editorCommand: null, terminalCommand: null };
+		return {
+			templates: [],
+			branchPickerLimit: DEFAULT_BASE_BRANCH_PICKER_LIMIT,
+			editorCommand: null,
+			terminalCommand: null,
+		};
 	}
 
 	try {
@@ -225,6 +274,8 @@ export function readProjectWorktreeSettings(repo: RepoState): WorktreeProjectSet
 		const parsed = JSON.parse(raw) as {
 			wt?: {
 				templates?: Array<{ name?: unknown; prefix?: unknown; base?: unknown }>;
+				branchPickerLimit?: unknown;
+				baseBranchPickerLimit?: unknown;
 				editorCommand?: unknown;
 				terminalCommand?: unknown;
 			};
@@ -240,6 +291,16 @@ export function readProjectWorktreeSettings(repo: RepoState): WorktreeProjectSet
 					return [{ name, prefix, ...(base ? { base } : {}) } satisfies WorktreeTemplate];
 				})
 			: [];
+		const configuredBranchPickerLimit =
+			typeof wtSettings?.branchPickerLimit === "number"
+				? wtSettings.branchPickerLimit
+				: wtSettings?.baseBranchPickerLimit;
+		const branchPickerLimit =
+			typeof configuredBranchPickerLimit === "number" &&
+			Number.isInteger(configuredBranchPickerLimit) &&
+			configuredBranchPickerLimit > 0
+				? configuredBranchPickerLimit
+				: DEFAULT_BASE_BRANCH_PICKER_LIMIT;
 		const editorCommand =
 			typeof wtSettings?.editorCommand === "string" && wtSettings.editorCommand.trim().length > 0
 				? wtSettings.editorCommand.trim()
@@ -248,9 +309,14 @@ export function readProjectWorktreeSettings(repo: RepoState): WorktreeProjectSet
 			typeof wtSettings?.terminalCommand === "string" && wtSettings.terminalCommand.trim().length > 0
 				? wtSettings.terminalCommand.trim()
 				: null;
-		return { templates, editorCommand, terminalCommand };
+		return { templates, branchPickerLimit, editorCommand, terminalCommand };
 	} catch {
-		return { templates: [], editorCommand: null, terminalCommand: null };
+		return {
+			templates: [],
+			branchPickerLimit: DEFAULT_BASE_BRANCH_PICKER_LIMIT,
+			editorCommand: null,
+			terminalCommand: null,
+		};
 	}
 }
 

@@ -1,4 +1,4 @@
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
 import { getWtArgumentCompletions, parseWtCommand, wtUsageText } from "./command-spec.js";
 import { handleEditorCommand, handleTerminalCommand } from "./commands/open.js";
 import { handlePrCommand } from "./commands/pr.js";
@@ -9,7 +9,35 @@ import { refreshWorktreeStateStatus } from "./git.js";
 import { toErrorMessage } from "./shared.js";
 import { DEFAULT_WORKTREE_ROOT, WORKTREE_ROOT_FLAG, WT_SETUP_FLAG } from "./types.js";
 
+const WORKTREE_STATE_POLL_INTERVAL_MS = 5000;
+
 export default function (pi: ExtensionAPI) {
+	let worktreeStatePollTimer: ReturnType<typeof setInterval> | undefined;
+	let worktreeStateRefreshInFlight = false;
+
+	const stopWorktreeStatePolling = () => {
+		if (!worktreeStatePollTimer) return;
+		clearInterval(worktreeStatePollTimer);
+		worktreeStatePollTimer = undefined;
+	};
+
+	const refreshWorktreeState = async (ctx: ExtensionContext, cwd?: string) => {
+		if (worktreeStateRefreshInFlight) return;
+		worktreeStateRefreshInFlight = true;
+		try {
+			await refreshWorktreeStateStatus(pi, ctx, cwd);
+		} finally {
+			worktreeStateRefreshInFlight = false;
+		}
+	};
+
+	const startWorktreeStatePolling = (ctx: ExtensionContext) => {
+		stopWorktreeStatePolling();
+		if (!ctx.hasUI) return;
+		worktreeStatePollTimer = setInterval(() => {
+			void refreshWorktreeState(ctx);
+		}, WORKTREE_STATE_POLL_INTERVAL_MS);
+	};
 	pi.registerFlag(WORKTREE_ROOT_FLAG, {
 		description:
 			"Base directory for new worktrees. Worktrees are created under <wt-root>/<repo-name>/<branch-name>; relative paths are resolved from the repo's main checkout.",
@@ -24,13 +52,17 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.on("session_start", async (_event, ctx) => {
-		await refreshWorktreeStateStatus(pi, ctx);
+		await refreshWorktreeState(ctx);
+		startWorktreeStatePolling(ctx);
+	});
+	pi.on("session_shutdown", async () => {
+		stopWorktreeStatePolling();
 	});
 	pi.on("turn_end", async (_event, ctx) => {
-		await refreshWorktreeStateStatus(pi, ctx);
+		await refreshWorktreeState(ctx);
 	});
 	pi.on("user_bash", async (event, ctx) => {
-		await refreshWorktreeStateStatus(pi, ctx, event.cwd);
+		await refreshWorktreeState(ctx, event.cwd);
 	});
 
 	pi.registerCommand("wt", {

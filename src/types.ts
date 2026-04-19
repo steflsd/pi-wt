@@ -86,6 +86,7 @@ export interface WorktreeTemplate {
 
 export interface WorktreeProjectSettings {
 	templates: WorktreeTemplate[];
+	branchPickerLimit: number;
 	editorCommand: string | null;
 	terminalCommand: string | null;
 }
