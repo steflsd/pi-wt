@@ -1,8 +1,14 @@
 import type { ExtensionAPI, ExtensionCommandContext } from "@mariozechner/pi-coding-agent";
 import { SessionManager } from "@mariozechner/pi-coding-agent";
 import { inspectRepo } from "../git.js";
-import { chooseSession, describeSession, listSessions, persistNewSessionHeader } from "../sessions.js";
-import type { WorkspaceTarget } from "../types.js";
+import {
+	chooseSession,
+	cloneCurrentSessionToWorkspace,
+	describeSession,
+	listSessions,
+	persistNewSessionHeader,
+} from "../sessions.js";
+import type { RepoState, WorkspaceTarget } from "../types.js";
 import {
 	archiveWorktreeAtPathFlow,
 	chooseWorkspaceTarget,
@@ -57,6 +63,14 @@ export async function handleWorkspaceCommand(pi: ExtensionAPI, ctx: ExtensionCom
 			if (!created) {
 				return;
 			}
+
+			const shouldContinueSessionInNewTerminal = shouldContinueSessionForNewWorktree(ctx, repo);
+			if (shouldContinueSessionInNewTerminal) {
+				const sessionPath = await cloneCurrentSessionToWorkspace(ctx, created);
+				await launchWorktreeInNewTab(pi, ctx, repo, created.cwd, { sessionPath });
+				return;
+			}
+
 			await launchWorktreeInNewTab(pi, ctx, repo, created.cwd);
 			return;
 		}
@@ -89,4 +103,12 @@ export async function handleWorkspaceCommand(pi: ExtensionAPI, ctx: ExtensionCom
 	if (!result.cancelled) {
 		ctx.ui.notify(`Created new session in ${workspaceSummary(workspace)}`, "info");
 	}
+}
+
+function shouldContinueSessionForNewWorktree(ctx: ExtensionCommandContext, repo: RepoState): boolean {
+	const hasSessionHistory = ctx.sessionManager.getEntries().length > 0;
+	const isStartingFromMain =
+		repo.cwd === repo.mainCheckoutPath ||
+		(repo.currentBranch !== null && repo.defaultBranch !== null && repo.currentBranch === repo.defaultBranch);
+	return hasSessionHistory && isStartingFromMain;
 }

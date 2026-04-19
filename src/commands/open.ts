@@ -83,17 +83,22 @@ export async function launchWorktreeInNewTab(
 	ctx: ExtensionCommandContext,
 	repo: RepoState,
 	cwd: string,
+	options?: { sessionPath?: string },
 ): Promise<boolean> {
 	const settings = readProjectWorktreeSettings(repo);
+	const piCommand = await resolveLaunchCommand(pi, cwd, "pi");
+	const launchCommand = options?.sessionPath
+		? `${piCommand} --session ${quoteShellArg(options.sessionPath)}`
+		: piCommand;
 	const command = settings.newWorktreeTabCommand?.trim()
-		? renderLaunchCommand(settings.newWorktreeTabCommand, cwd, "pi")
-		: await resolveTerminalLaunchCommand(pi, cwd, "pi");
+		? renderLaunchCommand(settings.newWorktreeTabCommand, cwd, launchCommand)
+		: await resolveTerminalLaunchCommand(pi, cwd, launchCommand);
 	if (!command) {
 		ctx.ui.notify(
 			[
 				"Could not determine how to open a new tab for a new worktree and start pi.",
 				"Configure wt.newWorktreeTabCommand in .pi/settings.json.",
-				'Example: { "wt": { "newWorktreeTabCommand": "wezterm start --cwd {{path}} pi" } }',
+				'Example: { "wt": { "newWorktreeTabCommand": "wezterm start --cwd {{path}} {{command}}" } }',
 			].join("\n"),
 			"error",
 		);
@@ -114,7 +119,7 @@ export async function launchWorktreeInNewTab(
 			return false;
 		}
 
-		ctx.ui.notify("Opened new worktree in a new tab and started pi.", "info");
+		ctx.ui.notify("Launched pi in a new terminal for the new worktree.", "info");
 		return true;
 	} finally {
 		ctx.ui.setStatus("pi-wt", undefined);
@@ -129,14 +134,19 @@ function renderOpenCommand(template: string, cwd: string): string {
 
 function renderLaunchCommand(template: string, cwd: string, command: string): string {
 	const quotedPath = quoteShellArg(cwd);
-	const quotedCommand = command;
-	let rendered = template.replaceAll("{{path}}", quotedPath).replaceAll("{{command}}", quotedCommand);
-	if (rendered === template) {
-		rendered = `${template} ${quotedPath} ${quotedCommand}`;
-	} else if (!template.includes("{{command}}")) {
-		rendered = `${rendered} ${quotedCommand}`;
+	const renderedWithPath = template.replaceAll("{{path}}", quotedPath);
+	if (template.includes("{{command}}")) {
+		return renderedWithPath.replaceAll("{{command}}", command);
 	}
-	return rendered;
+
+	const renderedWithExplicitPi = renderedWithPath.replace(/(^|[\s=])pi\s*$/, `$1${command}`);
+	if (renderedWithExplicitPi !== renderedWithPath) {
+		return renderedWithExplicitPi;
+	}
+	if (renderedWithPath === template) {
+		return `${template} ${quotedPath} ${command}`;
+	}
+	return `${renderedWithPath} ${command}`;
 }
 
 async function resolveFallbackOpenCommand(pi: ExtensionAPI, target: OpenTarget, cwd: string): Promise<string | null> {
@@ -244,7 +254,7 @@ function getTerminalLaunchTermProgramCandidate(
 	if (normalizedTermProgram === "ghostty") {
 		return {
 			probe: "open",
-			command: `open -a Ghostty --args --working-directory=${quoteShellArg(cwd)} -e ${launchCommand}`,
+			command: `open -na Ghostty --args --working-directory=${quoteShellArg(cwd)} -e ${launchCommand}`,
 		};
 	}
 	if (normalizedTermProgram === "wezterm") {
@@ -305,7 +315,7 @@ function getTerminalLaunchFallbackCandidates(
 		return [
 			{
 				probe: "open",
-				command: `open -a Ghostty --args --working-directory=${quoteShellArg(cwd)} -e ${launchCommand}`,
+				command: `open -na Ghostty --args --working-directory=${quoteShellArg(cwd)} -e ${launchCommand}`,
 			},
 			{ probe: "wezterm", command: `wezterm start --cwd ${quoteShellArg(cwd)} ${launchCommand}` },
 		];
@@ -332,6 +342,12 @@ function getTerminalLaunchFallbackCandidates(
 async function commandExists(pi: ExtensionAPI, command: string, cwd: string): Promise<boolean> {
 	const result = await execShell(pi, `command -v ${quoteShellArg(command)} >/dev/null 2>&1`, cwd);
 	return result.code === 0;
+}
+
+async function resolveLaunchCommand(pi: ExtensionAPI, cwd: string, command: string): Promise<string> {
+	const result = await execShell(pi, `command -v ${quoteShellArg(command)}`, cwd);
+	const resolved = result.stdout.trim();
+	return result.code === 0 && resolved ? resolved : command;
 }
 
 function exampleCommand(target: OpenTarget): string {

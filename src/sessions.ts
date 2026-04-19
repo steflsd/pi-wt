@@ -1,4 +1,5 @@
 import { writeFile } from "node:fs/promises";
+import type { SessionHeader } from "@mariozechner/pi-coding-agent";
 import { type ExtensionCommandContext, type SessionInfo, SessionManager } from "@mariozechner/pi-coding-agent";
 import { safeRealpath } from "./shared.js";
 import type { WorkspaceTarget } from "./types.js";
@@ -55,6 +56,29 @@ export async function switchToLatestOrCreateSession(
 	await persistNewSessionHeader(sessionManager, sessionFile);
 	const result = await ctx.switchSession(sessionFile);
 	return { cancelled: result.cancelled, created: true };
+}
+
+export async function cloneCurrentSessionToWorkspace(
+	ctx: ExtensionCommandContext,
+	workspace: WorkspaceTarget,
+): Promise<string> {
+	const targetSessionManager = SessionManager.create(workspace.cwd);
+	const targetSessionFile = targetSessionManager.getSessionFile();
+	const targetHeader = targetSessionManager.getHeader();
+	if (!targetSessionFile || !targetHeader) {
+		throw new Error(`Failed to prepare session file for ${workspace.cwd}`);
+	}
+
+	const sourceSessionFile = ctx.sessionManager.getSessionFile();
+	const header: SessionHeader = sourceSessionFile
+		? { ...targetHeader, parentSession: sourceSessionFile }
+		: targetHeader;
+	const content = [
+		JSON.stringify(header),
+		...ctx.sessionManager.getEntries().map((entry) => JSON.stringify(entry)),
+	].join("\n");
+	await writeFile(targetSessionFile, `${content}\n`, "utf8");
+	return targetSessionFile;
 }
 
 export function describeSession(session: SessionInfo): string {

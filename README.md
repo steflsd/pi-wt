@@ -82,7 +82,10 @@ set -euo pipefail
 pnpm install
 ```
 
-After creation, `pi-wt` opens the new worktree in a new terminal tab, starts `pi` there, and leaves the current Pi session alone.
+After creation, `pi-wt` starts `pi` in the new worktree. It uses smart defaults:
+
+- from the main/default branch with existing session history: continue that Pi session in the new terminal
+- otherwise: start fresh Pi in the new worktree terminal
 
 ## Default worktree path
 
@@ -147,7 +150,7 @@ Example `.pi/settings.json`:
     "branchPickerLimit": 12,
     "editorCommand": "cursor {{path}}",
     "terminalCommand": "open -a Terminal {{path}}",
-    "newWorktreeTabCommand": "wezterm start --cwd {{path}} pi"
+    "newWorktreeTabCommand": "wezterm start --cwd {{path}} {{command}}"
   }
 }
 ```
@@ -158,7 +161,7 @@ When templates are present, `/wt` shows a lightweight template list before the n
 
 For `/wt editor` and `/wt term`, `{{path}}` is replaced with the current worktree path. If the command does not include `{{path}}`, `pi-wt` appends the current worktree path automatically.
 
-For opening a newly created worktree in a new tab, `wt.newWorktreeTabCommand` can use `{{path}}` and optionally `{{command}}` (which defaults to `pi`). If `{{command}}` is omitted, `pi-wt` appends `pi` automatically.
+For opening a newly created worktree in a new tab, `wt.newWorktreeTabCommand` can use `{{path}}` and optionally `{{command}}` (which defaults to `pi`). Recommended: include `{{command}}` explicitly so `pi-wt` can pass resume arguments when it carries a session into the new worktree. If `{{command}}` is omitted, `pi-wt` appends the launch command automatically.
 
 `/wt term` also checks `TERM_PROGRAM` on macOS when `wt.terminalCommand` is not configured, so it can reuse the current terminal app for common terminals like Terminal, iTerm, Ghostty, WezTerm, and Warp.
 
@@ -186,7 +189,7 @@ Relative `--wt-root` values are resolved from the repo's main checkout.
 - On macOS, `/wt term` prefers the current `TERM_PROGRAM` when recognized before falling back to Terminal.app
 - Only shows existing worktrees under the configured worktree root
 - By default, `/wt` lets you choose a session in the selected workspace
-- Creating a new worktree opens it in a new tab and starts `pi`, leaving the current Pi session alone
+- Creating a new worktree starts `pi` in that worktree; when creating from the main/default branch with existing session history, `/wt` carries the current session across automatically
 - `.pi/wt/setup.sh` takes precedence over `--wt-setup`
 - `/wt pr` requires the GitHub CLI (`gh`)
 - `/wt pr` will push the current branch first when needed so `gh pr create` can run non-interactively
