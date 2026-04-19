@@ -1,5 +1,6 @@
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
 import { getWtArgumentCompletions, parseWtCommand, wtUsageText } from "./command-spec.js";
+import { handleArchiveCommand } from "./commands/archive.js";
 import { handleEditorCommand, handleTerminalCommand } from "./commands/open.js";
 import { handlePrCommand } from "./commands/pr.js";
 import { handleRebaseCommand } from "./commands/rebase.js";
@@ -66,7 +67,7 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.registerCommand("wt", {
-		description: "Worktree helpers: switch/create worktrees, show status, rebase, and manage PRs",
+		description: "Worktree helpers: switch/create/archive worktrees, show status, rebase, and manage PRs",
 		getArgumentCompletions: (prefix) => getWtArgumentCompletions(prefix),
 		handler: async (args, ctx) => {
 			try {
@@ -87,6 +88,9 @@ export default function (pi: ExtensionAPI) {
 						return;
 					case "pr":
 						await handlePrCommand(pi, ctx, command.explicitBase);
+						return;
+					case "archive":
+						await handleArchiveCommand(pi, ctx);
 						return;
 					case "editor":
 						await handleEditorCommand(pi, ctx);

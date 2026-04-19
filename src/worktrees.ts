@@ -2,12 +2,21 @@ import { existsSync, readFileSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import type { ExtensionAPI, ExtensionCommandContext } from "@mariozechner/pi-coding-agent";
-import { exec, execShell, normalizeBranchName, writeGitConfig } from "./git.js";
+import { DynamicBorder } from "@mariozechner/pi-coding-agent";
+import { Container, matchesKey, type SelectItem, SelectList, Text } from "@mariozechner/pi-tui";
+import {
+	exec,
+	execShell,
+	isBranchMergedInto,
+	normalizeBranchName,
+	readGitConfig,
+	readWorktreeChanges,
+	writeGitConfig,
+} from "./git.js";
 import { safeRealpath, toErrorMessage } from "./shared.js";
 import {
 	type BranchInfo,
 	DEFAULT_WORKTREE_ROOT,
-	LEGACY_WORKTREE_SETUP_SCRIPT,
 	type RepoState,
 	type SetupStep,
 	WORKTREE_ROOT_FLAG,
@@ -23,20 +32,32 @@ import {
 const DEFAULT_BASE_BRANCH_PICKER_LIMIT = 12;
 const OTHER_BASE_BRANCH_LABEL = "Other branch…\n  type an existing local branch name";
 
+interface ArchiveCandidate {
+	worktree: WorktreeInfo;
+	pathLabel: string;
+	changes: string[];
+	deleteBranch: boolean;
+	mergeTarget: string | null;
+	mergeState: "merged" | "not-merged" | "unknown";
+}
+
+interface WorkspacePickerItem {
+	choice: WorkspaceMenuChoice;
+	selectItem: SelectItem;
+}
+
 export function getConfiguredWorktreeRoot(pi: ExtensionAPI): string {
 	const configured = pi.getFlag(WORKTREE_ROOT_FLAG);
 	return typeof configured === "string" && configured.trim().length > 0 ? configured.trim() : DEFAULT_WORKTREE_ROOT;
 }
 
 export function getConfiguredSetupStep(pi: ExtensionAPI, repo: RepoState): SetupStep | null {
-	for (const scriptPath of [WORKTREE_SETUP_SCRIPT, LEGACY_WORKTREE_SETUP_SCRIPT]) {
-		const projectScriptPath = join(repo.mainCheckoutPath, scriptPath);
-		if (existsSync(projectScriptPath)) {
-			return {
-				label: projectScriptPath,
-				command: `bash ${quoteShellArg(`./${scriptPath}`)}`,
-			};
-		}
+	const projectScriptPath = join(repo.mainCheckoutPath, WORKTREE_SETUP_SCRIPT);
+	if (existsSync(projectScriptPath)) {
+		return {
+			label: projectScriptPath,
+			command: `bash ${quoteShellArg(`./${WORKTREE_SETUP_SCRIPT}`)}`,
+		};
 	}
 
 	const configured = pi.getFlag(WT_SETUP_FLAG);
@@ -50,30 +71,76 @@ export async function chooseWorkspaceTarget(
 	repo: RepoState,
 	worktreeRoot: string,
 ): Promise<WorkspaceMenuChoice | undefined> {
-	const choices = new Map<string, WorkspaceMenuChoice>();
-	const options: string[] = [];
 	const resolvedWorktreeRoot = resolveWorktreeRoot(repo.mainCheckoutPath, worktreeRoot);
 	const existingWorktrees = repo.worktrees.filter(
 		(worktree) => !worktree.isCurrent && !worktree.isMainCheckout && isSubpathOf(worktree.path, resolvedWorktreeRoot),
 	);
+	const items: WorkspacePickerItem[] = [
+		{
+			choice: { type: "create-worktree" },
+			selectItem: {
+				value: "create-worktree",
+				label: "Create new worktree…",
+				description: relative(repo.mainCheckoutPath, resolvedWorktreeRoot) || resolvedWorktreeRoot,
+			},
+		},
+		...existingWorktrees.map((worktree) => {
+			const workspace: WorkspaceTarget = {
+				cwd: worktree.path,
+				branch: worktree.branch,
+				kind: "worktree",
+			};
+			return {
+				choice: { type: "workspace", workspace },
+				selectItem: {
+					value: `worktree:${worktree.path}`,
+					label: workspaceBranchLabel(worktree),
+					description: formatWorkspaceDescription(worktree, resolvedWorktreeRoot),
+				},
+			} satisfies WorkspacePickerItem;
+		}),
+	];
+	const itemsByValue = new Map(items.map((item) => [item.selectItem.value, item]));
 
-	const createLabel = "Create new worktree…";
-	choices.set(createLabel, { type: "create-worktree" });
-	options.push(createLabel);
+	return ctx.ui.custom<WorkspaceMenuChoice | undefined>((tui, theme, _keybindings, done) => {
+		const container = new Container();
+		container.addChild(new DynamicBorder((text: string) => theme.fg("accent", text)));
+		container.addChild(new Text(theme.fg("accent", theme.bold("Worktrees")), 1, 0));
+		container.addChild(new Text(theme.fg("muted", resolvedWorktreeRoot), 1, 0));
+		const selectList = new SelectList(
+			items.map((item) => item.selectItem),
+			Math.min(Math.max(items.length, 1), 10),
+			{
+				selectedPrefix: (text: string) => theme.fg("accent", text),
+				selectedText: (text: string) => theme.fg("accent", text),
+				description: (text: string) => theme.fg("muted", text),
+				scrollInfo: (text: string) => theme.fg("dim", text),
+				noMatch: (text: string) => theme.fg("warning", text),
+			},
+		);
+		selectList.onSelect = (item) => done(itemsByValue.get(item.value)?.choice);
+		selectList.onCancel = () => done(undefined);
+		container.addChild(selectList);
+		container.addChild(new Text(theme.fg("dim", "↑↓ navigate  enter select  a archive  esc cancel"), 1, 0));
+		container.addChild(new DynamicBorder((text: string) => theme.fg("accent", text)));
 
-	for (const worktree of existingWorktrees) {
-		const workspace: WorkspaceTarget = {
-			cwd: worktree.path,
-			branch: worktree.branch,
-			kind: "worktree",
+		return {
+			render: (width: number) => container.render(width),
+			invalidate: () => container.invalidate(),
+			handleInput: (data: string) => {
+				if (isArchiveKey(data)) {
+					const selected = selectList.getSelectedItem();
+					const item = selected ? itemsByValue.get(selected.value) : undefined;
+					if (item?.choice.type === "workspace" && item.choice.workspace) {
+						done({ type: "archive-worktree", worktreePath: item.choice.workspace.cwd });
+					}
+					return;
+				}
+				selectList.handleInput(data);
+				tui.requestRender();
+			},
 		};
-		const label = formatWorkspaceOption(worktree, resolvedWorktreeRoot);
-		choices.set(label, { type: "workspace", workspace });
-		options.push(label);
-	}
-
-	const selected = await ctx.ui.select(`Create or pick a worktree under ${resolvedWorktreeRoot}`, options);
-	return selected ? choices.get(selected) : undefined;
+	});
 }
 
 export async function createWorktreeFlow(
@@ -152,6 +219,108 @@ export async function createWorktreeFlow(
 		branch: newBranchName,
 		kind: "worktree",
 	};
+}
+
+export async function archiveWorktreeFlow(
+	pi: ExtensionAPI,
+	ctx: ExtensionCommandContext,
+	repo: RepoState,
+	worktreeRoot: string,
+): Promise<boolean> {
+	const resolvedWorktreeRoot = resolveWorktreeRoot(repo.mainCheckoutPath, worktreeRoot);
+	const candidates = await listArchiveCandidates(pi, repo, resolvedWorktreeRoot);
+	if (candidates.length === 0) {
+		ctx.ui.notify(`No linked worktrees under ${resolvedWorktreeRoot} can be archived.`, "info");
+		return false;
+	}
+
+	const labels = candidates.map((candidate) => formatArchiveCandidateOption(candidate));
+	const byLabel = new Map(labels.map((label, index) => [label, candidates[index]]));
+	const selected = await ctx.ui.select(`Archive a worktree under ${resolvedWorktreeRoot}`, labels);
+	if (!selected) {
+		return false;
+	}
+
+	const candidate = byLabel.get(selected);
+	return candidate ? archiveWorktreeCandidateFlow(pi, ctx, repo, candidate) : false;
+}
+
+export async function archiveWorktreeAtPathFlow(
+	pi: ExtensionAPI,
+	ctx: ExtensionCommandContext,
+	repo: RepoState,
+	worktreeRoot: string,
+	worktreePath: string,
+): Promise<boolean> {
+	const resolvedWorktreeRoot = resolveWorktreeRoot(repo.mainCheckoutPath, worktreeRoot);
+	const candidates = await listArchiveCandidates(pi, repo, resolvedWorktreeRoot);
+	const candidate = candidates.find((entry) => entry.worktree.path === safeRealpath(worktreePath));
+	if (!candidate) {
+		ctx.ui.notify(`Could not find an archivable linked worktree at ${worktreePath}.`, "warning");
+		return false;
+	}
+	return archiveWorktreeCandidateFlow(pi, ctx, repo, candidate);
+}
+
+async function archiveWorktreeCandidateFlow(
+	pi: ExtensionAPI,
+	ctx: ExtensionCommandContext,
+	repo: RepoState,
+	candidate: ArchiveCandidate,
+): Promise<boolean> {
+	if (candidate.changes.length > 0) {
+		ctx.ui.notify(
+			[
+				`Refusing to archive ${workspaceBranchLabel(candidate.worktree)} because it has local changes (${candidate.changes.length}).`,
+				`Clean ${candidate.worktree.path} first, then try /wt archive again.`,
+			].join("\n"),
+			"warning",
+		);
+		return false;
+	}
+
+	const confirmationLines = [
+		`Branch: ${candidate.worktree.branch ?? "(detached HEAD)"}`,
+		`Path: ${candidate.worktree.path}`,
+		`Delete local branch: ${describeArchiveBranchAction(candidate)}`,
+		"This removes the linked worktree directory.",
+	];
+	const confirmed = await ctx.ui.confirm("Archive worktree", confirmationLines.join("\n"));
+	if (!confirmed) {
+		return false;
+	}
+
+	ctx.ui.setStatus("pi-wt", `Archiving ${workspaceBranchLabel(candidate.worktree)}...`);
+	try {
+		const removed = await exec(pi, "git", ["worktree", "remove", candidate.worktree.path], repo.mainCheckoutPath);
+		if (removed.code !== 0) {
+			throw new Error(removed.stderr.trim() || `Failed to remove worktree ${candidate.worktree.path}`);
+		}
+
+		if (candidate.deleteBranch && candidate.worktree.branch) {
+			const deleted = await exec(pi, "git", ["branch", "-d", candidate.worktree.branch], repo.mainCheckoutPath);
+			if (deleted.code !== 0) {
+				ctx.ui.notify(
+					[
+						`Removed worktree ${candidate.worktree.path}, but could not delete local branch ${candidate.worktree.branch}.`,
+						deleted.stderr.trim() || deleted.stdout.trim() || "git branch -d failed",
+					].join("\n"),
+					"warning",
+				);
+				return true;
+			}
+		}
+
+		ctx.ui.notify(
+			candidate.deleteBranch && candidate.worktree.branch
+				? `Archived ${candidate.worktree.branch}: removed worktree and deleted the local branch.`
+				: `Archived ${workspaceBranchLabel(candidate.worktree)}: removed the worktree.`,
+			"info",
+		);
+		return true;
+	} finally {
+		ctx.ui.setStatus("pi-wt", undefined);
+	}
 }
 
 async function chooseWorktreeTemplate(
@@ -275,7 +444,6 @@ export function readProjectWorktreeSettings(repo: RepoState): WorktreeProjectSet
 			wt?: {
 				templates?: Array<{ name?: unknown; prefix?: unknown; base?: unknown }>;
 				branchPickerLimit?: unknown;
-				baseBranchPickerLimit?: unknown;
 				editorCommand?: unknown;
 				terminalCommand?: unknown;
 			};
@@ -291,15 +459,11 @@ export function readProjectWorktreeSettings(repo: RepoState): WorktreeProjectSet
 					return [{ name, prefix, ...(base ? { base } : {}) } satisfies WorktreeTemplate];
 				})
 			: [];
-		const configuredBranchPickerLimit =
-			typeof wtSettings?.branchPickerLimit === "number"
-				? wtSettings.branchPickerLimit
-				: wtSettings?.baseBranchPickerLimit;
 		const branchPickerLimit =
-			typeof configuredBranchPickerLimit === "number" &&
-			Number.isInteger(configuredBranchPickerLimit) &&
-			configuredBranchPickerLimit > 0
-				? configuredBranchPickerLimit
+			typeof wtSettings?.branchPickerLimit === "number" &&
+			Number.isInteger(wtSettings.branchPickerLimit) &&
+			wtSettings.branchPickerLimit > 0
+				? wtSettings.branchPickerLimit
 				: DEFAULT_BASE_BRANCH_PICKER_LIMIT;
 		const editorCommand =
 			typeof wtSettings?.editorCommand === "string" && wtSettings.editorCommand.trim().length > 0
@@ -336,26 +500,80 @@ export function workspaceSummary(workspace: WorkspaceTarget): string {
 	return `${prefix} · ${branch}`;
 }
 
-function formatWorkspaceOption(worktree: WorktreeInfo, worktreeRoot?: string): string {
-	const title = worktree.isCurrent
-		? `Current checkout · ${workspaceBranchLabel(worktree)}`
-		: worktree.isMainCheckout
-			? `Main checkout · ${workspaceBranchLabel(worktree)}`
-			: workspaceBranchLabel(worktree);
+async function listArchiveCandidates(
+	pi: ExtensionAPI,
+	repo: RepoState,
+	resolvedWorktreeRoot: string,
+): Promise<ArchiveCandidate[]> {
+	const worktrees = repo.worktrees.filter(
+		(worktree) => !worktree.isCurrent && !worktree.isMainCheckout && isSubpathOf(worktree.path, resolvedWorktreeRoot),
+	);
 
+	return Promise.all(
+		worktrees.map(async (worktree) => {
+			const branch = worktree.branch;
+			const configuredTarget = branch
+				? await readGitConfig(pi, repo.mainCheckoutPath, `branch.${branch}.wt-parent`)
+				: null;
+			const mergeTarget = branch ? (configuredTarget ?? repo.defaultBranch) : null;
+			const mergeState =
+				branch && mergeTarget && normalizeBranchName(branch) !== normalizeBranchName(mergeTarget)
+					? ((await isBranchMergedInto(pi, repo.mainCheckoutPath, branch, mergeTarget)) ?? "unknown")
+					: "unknown";
+			const changes = await readWorktreeChanges(pi, worktree.path, true);
+			return {
+				worktree,
+				pathLabel: relative(resolvedWorktreeRoot, worktree.path) || basename(worktree.path),
+				changes,
+				deleteBranch: Boolean(branch && mergeTarget && mergeState === true),
+				mergeTarget: mergeTarget ? normalizeBranchName(mergeTarget) : null,
+				mergeState: mergeState === true ? "merged" : mergeState === false ? "not-merged" : "unknown",
+			} satisfies ArchiveCandidate;
+		}),
+	);
+}
+
+function formatWorkspaceDescription(worktree: WorktreeInfo, worktreeRoot?: string): string {
 	const flags = [
-		worktree.isCurrent && worktree.isMainCheckout ? "main" : "",
 		worktree.detached ? "detached" : "",
 		worktree.locked ? "locked" : "",
 		worktree.prunable ? "prunable" : "",
 	].filter(Boolean);
-
-	const meta = flags.length > 0 ? ` [${flags.join(", ")}]` : "";
 	const pathLabel =
 		worktreeRoot && isSubpathOf(worktree.path, worktreeRoot)
 			? relative(worktreeRoot, worktree.path) || basename(worktree.path)
 			: worktree.path;
-	return `${title}${meta}${pathLabel ? ` · ${pathLabel}` : ""}`;
+	return [pathLabel, flags.length > 0 ? `[${flags.join(", ")}]` : ""].filter(Boolean).join(" · ");
+}
+
+function formatArchiveCandidateOption(candidate: ArchiveCandidate): string {
+	const flags = [
+		candidate.changes.length > 0 ? `dirty (${candidate.changes.length})` : "clean",
+		candidate.mergeState === "merged" && candidate.mergeTarget
+			? `merged into ${candidate.mergeTarget}`
+			: candidate.mergeState === "not-merged" && candidate.mergeTarget
+				? `not merged into ${candidate.mergeTarget}`
+				: candidate.mergeTarget
+					? `merge target ${candidate.mergeTarget}`
+					: "merge target unknown",
+	].join(" · ");
+	return `${workspaceBranchLabel(candidate.worktree)}\n  ${flags} · ${candidate.pathLabel}`;
+}
+
+function describeArchiveBranchAction(candidate: ArchiveCandidate): string {
+	if (!candidate.worktree.branch) {
+		return "no (detached HEAD)";
+	}
+	if (candidate.deleteBranch && candidate.mergeTarget) {
+		return `yes (safe delete after merge into ${candidate.mergeTarget})`;
+	}
+	if (candidate.mergeState === "not-merged" && candidate.mergeTarget) {
+		return `no (${candidate.worktree.branch} is not merged into ${candidate.mergeTarget})`;
+	}
+	if (candidate.mergeTarget) {
+		return `no (could not verify merge into ${candidate.mergeTarget})`;
+	}
+	return "no (no merge target could be determined)";
 }
 
 function formatWorktreeTemplateOption(template: WorktreeTemplate): string {
@@ -409,6 +627,10 @@ function sanitizeBranchForPath(branch: string): string {
 		.replace(/-+/g, "-")
 		.replace(/^-|-$/g, "");
 	return sanitized || "worktree";
+}
+
+function isArchiveKey(data: string): boolean {
+	return data === "a" || data === "A" || matchesKey(data, "a") || matchesKey(data, "shift+a");
 }
 
 function quoteShellArg(value: string): string {

@@ -2,8 +2,10 @@ import type { ExtensionAPI, ExtensionCommandContext } from "@mariozechner/pi-cod
 import { SessionManager } from "@mariozechner/pi-coding-agent";
 import { inspectRepo } from "../git.js";
 import { chooseSession, describeSession, listSessions, persistNewSessionHeader } from "../sessions.js";
-import type { SessionSelectionMode } from "../types.js";
+import type { SessionSelectionMode, WorkspaceTarget } from "../types.js";
 import {
+	archiveWorktreeAtPathFlow,
+	archiveWorktreeFlow,
 	chooseWorkspaceTarget,
 	createWorktreeFlow,
 	getConfiguredSetupStep,
@@ -17,38 +19,50 @@ export async function handleWorkspaceCommand(
 	ctx: ExtensionCommandContext,
 	sessionMode: SessionSelectionMode,
 ): Promise<void> {
-	const repo = await inspectRepo(pi, ctx.cwd);
-	if (!repo) {
-		ctx.ui.notify("/wt must be run inside a git repository", "error");
-		return;
-	}
-
 	const worktreeRoot = getConfiguredWorktreeRoot(pi);
-	const settings = readProjectWorktreeSettings(repo);
-	const menuChoice = await chooseWorkspaceTarget(ctx, repo, worktreeRoot);
-	if (!menuChoice) {
-		ctx.ui.notify("Cancelled", "info");
-		return;
-	}
+	let workspace: WorkspaceTarget | undefined;
+	while (!workspace) {
+		const repo = await inspectRepo(pi, ctx.cwd);
+		if (!repo) {
+			ctx.ui.notify("/wt must be run inside a git repository", "error");
+			return;
+		}
 
-	const workspace =
-		menuChoice.type === "workspace"
-			? menuChoice.workspace
-			: await createWorktreeFlow(
-					pi,
-					ctx,
-					repo,
-					worktreeRoot,
-					getConfiguredSetupStep(pi, repo),
-					settings.templates,
-					settings.branchPickerLimit,
-				);
-	if (!workspace) {
-		return;
+		const settings = readProjectWorktreeSettings(repo);
+		const menuChoice = await chooseWorkspaceTarget(ctx, repo, worktreeRoot);
+		if (!menuChoice) {
+			ctx.ui.notify("Cancelled", "info");
+			return;
+		}
+
+		if (menuChoice.type === "archive-worktree") {
+			if (menuChoice.worktreePath) {
+				await archiveWorktreeAtPathFlow(pi, ctx, repo, worktreeRoot, menuChoice.worktreePath);
+			} else {
+				await archiveWorktreeFlow(pi, ctx, repo, worktreeRoot);
+			}
+			continue;
+		}
+
+		workspace =
+			menuChoice.type === "workspace"
+				? menuChoice.workspace
+				: await createWorktreeFlow(
+						pi,
+						ctx,
+						repo,
+						worktreeRoot,
+						getConfiguredSetupStep(pi, repo),
+						settings.templates,
+						settings.branchPickerLimit,
+					);
+		if (!workspace) {
+			return;
+		}
 	}
 
 	const sessions = await listSessions(workspace.cwd);
-	if (sessionMode === "pick" && sessions.length > 0) {
+	if (sessionMode !== "new" && sessions.length > 0) {
 		const selected = await chooseSession(ctx, workspace, sessions);
 		if (!selected) {
 			ctx.ui.notify("Cancelled", "info");
@@ -58,15 +72,6 @@ export async function handleWorkspaceCommand(
 		const result = await ctx.switchSession(selected.path);
 		if (!result.cancelled) {
 			ctx.ui.notify(`Switched to ${workspaceSummary(workspace)} · ${describeSession(selected)}`, "info");
-		}
-		return;
-	}
-
-	if (sessionMode !== "new" && sessions.length > 0) {
-		await ctx.waitForIdle();
-		const result = await ctx.switchSession(sessions[0].path);
-		if (!result.cancelled) {
-			ctx.ui.notify(`Switched to ${workspaceSummary(workspace)} · ${describeSession(sessions[0])}`, "info");
 		}
 		return;
 	}

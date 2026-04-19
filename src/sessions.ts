@@ -31,7 +31,7 @@ export async function chooseSession(
 ): Promise<SessionInfo | undefined> {
 	const labels = sessions.map((session) => `${describeSession(session)}\n  ${session.path}`);
 	const byLabel = new Map(labels.map((label, index) => [label, sessions[index]]));
-	const selected = await ctx.ui.select(`Pick session for ${workspaceSummary(workspace)}`, labels);
+	const selected = await ctx.ui.select(`Sessions · ${workspaceSummary(workspace)}`, labels);
 	return selected ? byLabel.get(selected) : undefined;
 }
 

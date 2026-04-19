@@ -75,11 +75,52 @@ async function resolveFallbackOpenCommand(pi: ExtensionAPI, target: OpenTarget, 
 		}
 	}
 
+	const termProgramCandidate = getTermProgramCandidate(target, process.platform, process.env.TERM_PROGRAM);
+	if (
+		termProgramCandidate &&
+		(!termProgramCandidate.probe || (await commandExists(pi, termProgramCandidate.probe, cwd)))
+	) {
+		return renderOpenCommand(termProgramCandidate.command, cwd);
+	}
+
 	const candidates = getFallbackCandidates(target, process.platform);
 	for (const candidate of candidates) {
 		if (!candidate.probe || (await commandExists(pi, candidate.probe, cwd))) {
 			return renderOpenCommand(candidate.command, cwd);
 		}
+	}
+
+	return null;
+}
+
+function getTermProgramCandidate(
+	target: OpenTarget,
+	platform: NodeJS.Platform,
+	termProgram: string | undefined,
+): CommandCandidate | null {
+	if (target !== "terminal" || platform !== "darwin") {
+		return null;
+	}
+
+	const normalizedTermProgram = termProgram?.trim().toLowerCase();
+	if (!normalizedTermProgram) {
+		return null;
+	}
+
+	if (normalizedTermProgram === "apple_terminal") {
+		return { probe: "open", command: "open -a Terminal {{path}}" };
+	}
+	if (normalizedTermProgram === "iterm.app") {
+		return { probe: "open", command: "open -a iTerm {{path}}" };
+	}
+	if (normalizedTermProgram === "ghostty") {
+		return { probe: "open", command: "open -a Ghostty {{path}}" };
+	}
+	if (normalizedTermProgram === "wezterm") {
+		return { probe: "wezterm", command: "wezterm start --cwd {{path}}" };
+	}
+	if (normalizedTermProgram === "warpterminal") {
+		return { probe: "open", command: "open -a Warp {{path}}" };
 	}
 
 	return null;

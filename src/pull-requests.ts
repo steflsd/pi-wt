@@ -7,7 +7,6 @@ import { exec, summarizeCommandOutput } from "./git.js";
 import type { BaseBranchSelection, PullRequestDraft, RepoState } from "./types.js";
 
 const PROJECT_PR_PROMPT_PATH = ".pi/wt/pr.md";
-const LEGACY_PROJECT_PR_PROMPT_PATH = ".pi/wt-pr.md";
 const DEFAULT_PR_PROMPT_PATH = fileURLToPath(new URL("../prompts/wt/pr.md", import.meta.url));
 const PR_DRAFT_SYSTEM_PROMPT = [
 	"You write concise, high-signal GitHub pull requests.",
@@ -70,14 +69,12 @@ export async function generatePullRequestDraft(
 }
 
 async function readPullRequestPromptTemplate(repoRoot: string): Promise<{ path: string; template: string }> {
-	for (const path of [PROJECT_PR_PROMPT_PATH, LEGACY_PROJECT_PR_PROMPT_PATH]) {
-		const projectPath = resolve(repoRoot, path);
-		if (await pathExists(projectPath)) {
-			return {
-				path: projectPath,
-				template: await readFile(projectPath, "utf8"),
-			};
-		}
+	const projectPath = resolve(repoRoot, PROJECT_PR_PROMPT_PATH);
+	if (await pathExists(projectPath)) {
+		return {
+			path: projectPath,
+			template: await readFile(projectPath, "utf8"),
+		};
 	}
 
 	return {

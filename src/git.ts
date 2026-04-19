@@ -178,20 +178,8 @@ async function resolveBaseBranchSelection(
 	source: string,
 ): Promise<BaseBranchSelection> {
 	const normalizedName = normalizeBranchName(branchish);
-	const directRef = await verifyRef(pi, cwd, branchish);
-	if (directRef) {
-		return { name: normalizedName, ref: branchish, source };
-	}
-
-	if (await refExists(pi, cwd, `refs/heads/${normalizedName}`)) {
-		return { name: normalizedName, ref: normalizedName, source };
-	}
-
-	if (await refExists(pi, cwd, `refs/remotes/origin/${normalizedName}`)) {
-		return { name: normalizedName, ref: `origin/${normalizedName}`, source };
-	}
-
-	return { name: normalizedName, ref: normalizedName, source };
+	const ref = (await resolveBranchishRef(pi, cwd, branchish)) ?? normalizedName;
+	return { name: normalizedName, ref, source };
 }
 
 export async function hasGhCli(pi: ExtensionAPI, cwd: string): Promise<boolean> {
@@ -331,8 +319,41 @@ export async function readTrackedWorktreeChanges(pi: ExtensionAPI, cwd: string):
 		.filter(Boolean);
 }
 
-export async function readWorktreeChanges(pi: ExtensionAPI, cwd: string): Promise<string[]> {
-	return readTrackedWorktreeChanges(pi, cwd);
+export async function readWorktreeChanges(pi: ExtensionAPI, cwd: string, includeUntracked = false): Promise<string[]> {
+	const result = await exec(
+		pi,
+		"git",
+		includeUntracked ? ["status", "--short"] : ["status", "--short", "--untracked-files=no"],
+		cwd,
+	);
+	if (result.code !== 0) {
+		return [];
+	}
+
+	return result.stdout
+		.split(/\r?\n/)
+		.map((line) => line.trimEnd())
+		.filter(Boolean);
+}
+
+export async function isBranchMergedInto(
+	pi: ExtensionAPI,
+	cwd: string,
+	branchish: string,
+	baseBranchish: string,
+): Promise<boolean | null> {
+	const [branchRef, baseRef] = await Promise.all([
+		resolveBranchishRef(pi, cwd, branchish),
+		resolveBranchishRef(pi, cwd, baseBranchish),
+	]);
+	if (!branchRef || !baseRef) {
+		return null;
+	}
+
+	const result = await exec(pi, "git", ["merge-base", "--is-ancestor", branchRef, baseRef], cwd);
+	if (result.code === 0) return true;
+	if (result.code === 1) return false;
+	return null;
 }
 
 async function verifyRef(pi: ExtensionAPI, cwd: string, branchish: string): Promise<boolean> {
@@ -407,6 +428,23 @@ function upstreamRemoteName(upstream: string): string | null {
 async function refExists(pi: ExtensionAPI, cwd: string, ref: string): Promise<boolean> {
 	const result = await exec(pi, "git", ["show-ref", "--verify", "--quiet", ref], cwd);
 	return result.code === 0;
+}
+
+async function resolveBranchishRef(pi: ExtensionAPI, cwd: string, branchish: string): Promise<string | null> {
+	const normalizedName = normalizeBranchName(branchish);
+	if (await verifyRef(pi, cwd, branchish)) {
+		return branchish;
+	}
+
+	if (await refExists(pi, cwd, `refs/heads/${normalizedName}`)) {
+		return normalizedName;
+	}
+
+	if (await refExists(pi, cwd, `refs/remotes/origin/${normalizedName}`)) {
+		return `origin/${normalizedName}`;
+	}
+
+	return null;
 }
 
 export function normalizeBranchName(branchish: string): string {
