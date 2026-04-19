@@ -44,7 +44,7 @@
 		"format": "biome check --write .",
 		"lint": "biome check --error-on-warnings .",
 		"typecheck": "tsc --noEmit",
-		"check": "biome check --write --error-on-warnings . && npm run typecheck",
-		"prepublishOnly": "npm run check"
+		"check": "biome check --write --error-on-warnings . && pnpm run typecheck",
+		"prepublishOnly": "pnpm run check"
 	}
 }
