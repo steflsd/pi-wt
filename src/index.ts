@@ -1,5 +1,6 @@
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { getWtArgumentCompletions, parseWtCommand, wtUsageText } from "./command-spec.js";
+import { handleEditorCommand, handleTerminalCommand } from "./commands/open.js";
 import { handlePrCommand } from "./commands/pr.js";
 import { handleRebaseCommand } from "./commands/rebase.js";
 import { handleStatusCommand } from "./commands/status.js";
@@ -10,7 +11,8 @@ import { DEFAULT_WORKTREE_ROOT, WORKTREE_ROOT_FLAG, WT_SETUP_FLAG } from "./type
 
 export default function (pi: ExtensionAPI) {
 	pi.registerFlag(WORKTREE_ROOT_FLAG, {
-		description: "Root directory for new worktrees. Relative paths are resolved from the repo's main checkout.",
+		description:
+			"Base directory for new worktrees. Worktrees are created under <wt-root>/<repo-name>/<branch-name>; relative paths are resolved from the repo's main checkout.",
 		type: "string",
 		default: DEFAULT_WORKTREE_ROOT,
 	});
@@ -27,8 +29,8 @@ export default function (pi: ExtensionAPI) {
 	pi.on("turn_end", async (_event, ctx) => {
 		await refreshWorktreeStateStatus(pi, ctx);
 	});
-	pi.on("user_bash", async (_event, ctx) => {
-		await refreshWorktreeStateStatus(pi, ctx);
+	pi.on("user_bash", async (event, ctx) => {
+		await refreshWorktreeStateStatus(pi, ctx, event.cwd);
 	});
 
 	pi.registerCommand("wt", {
@@ -53,6 +55,12 @@ export default function (pi: ExtensionAPI) {
 						return;
 					case "pr":
 						await handlePrCommand(pi, ctx, command.explicitBase);
+						return;
+					case "editor":
+						await handleEditorCommand(pi, ctx);
+						return;
+					case "terminal":
+						await handleTerminalCommand(pi, ctx);
 						return;
 					case "help":
 						ctx.ui.notify(wtUsageText(), "info");

@@ -1,12 +1,13 @@
 import { existsSync, readFileSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
-import { basename, dirname, isAbsolute, join, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import type { ExtensionAPI, ExtensionCommandContext } from "@mariozechner/pi-coding-agent";
 import { exec, execShell, normalizeBranchName, writeGitConfig } from "./git.js";
 import { safeRealpath, toErrorMessage } from "./shared.js";
 import {
 	type BranchInfo,
 	DEFAULT_WORKTREE_ROOT,
+	LEGACY_WORKTREE_SETUP_SCRIPT,
 	type RepoState,
 	type SetupStep,
 	WORKTREE_ROOT_FLAG,
@@ -14,6 +15,7 @@ import {
 	type WorkspaceMenuChoice,
 	type WorkspaceTarget,
 	type WorktreeInfo,
+	type WorktreeProjectSettings,
 	type WorktreeTemplate,
 	WT_SETUP_FLAG,
 } from "./types.js";
@@ -24,12 +26,14 @@ export function getConfiguredWorktreeRoot(pi: ExtensionAPI): string {
 }
 
 export function getConfiguredSetupStep(pi: ExtensionAPI, repo: RepoState): SetupStep | null {
-	const projectScriptPath = join(repo.mainCheckoutPath, WORKTREE_SETUP_SCRIPT);
-	if (existsSync(projectScriptPath)) {
-		return {
-			label: projectScriptPath,
-			command: `bash ${quoteShellArg(`./${WORKTREE_SETUP_SCRIPT}`)}`,
-		};
+	for (const scriptPath of [WORKTREE_SETUP_SCRIPT, LEGACY_WORKTREE_SETUP_SCRIPT]) {
+		const projectScriptPath = join(repo.mainCheckoutPath, scriptPath);
+		if (existsSync(projectScriptPath)) {
+			return {
+				label: projectScriptPath,
+				command: `bash ${quoteShellArg(`./${scriptPath}`)}`,
+			};
+		}
 	}
 
 	const configured = pi.getFlag(WT_SETUP_FLAG);
@@ -50,7 +54,7 @@ export async function chooseWorkspaceTarget(
 		(worktree) => !worktree.isCurrent && !worktree.isMainCheckout && isSubpathOf(worktree.path, resolvedWorktreeRoot),
 	);
 
-	const createLabel = `Create new worktree…\n  base branch + new branch under ${resolvedWorktreeRoot}`;
+	const createLabel = "Create new worktree…";
 	choices.set(createLabel, { type: "create-worktree" });
 	options.push(createLabel);
 
@@ -60,12 +64,12 @@ export async function chooseWorkspaceTarget(
 			branch: worktree.branch,
 			kind: "worktree",
 		};
-		const label = formatWorkspaceOption(worktree);
+		const label = formatWorkspaceOption(worktree, resolvedWorktreeRoot);
 		choices.set(label, { type: "workspace", workspace });
 		options.push(label);
 	}
 
-	const selected = await ctx.ui.select("Create a new worktree or pick an existing one", options);
+	const selected = await ctx.ui.select(`Create or pick a worktree under ${resolvedWorktreeRoot}`, options);
 	return selected ? choices.get(selected) : undefined;
 }
 
@@ -210,28 +214,48 @@ async function promptForNewBranchName(
 	}
 }
 
-export function readProjectWorktreeTemplates(repo: RepoState): WorktreeTemplate[] {
+export function readProjectWorktreeSettings(repo: RepoState): WorktreeProjectSettings {
 	const settingsPath = join(repo.mainCheckoutPath, ".pi", "settings.json");
-	if (!existsSync(settingsPath)) return [];
+	if (!existsSync(settingsPath)) {
+		return { templates: [], editorCommand: null, terminalCommand: null };
+	}
 
 	try {
 		const raw = readFileSync(settingsPath, "utf8");
 		const parsed = JSON.parse(raw) as {
-			wt?: { templates?: Array<{ name?: unknown; prefix?: unknown; base?: unknown }> };
+			wt?: {
+				templates?: Array<{ name?: unknown; prefix?: unknown; base?: unknown }>;
+				editorCommand?: unknown;
+				terminalCommand?: unknown;
+			};
 		};
-		const templates = parsed?.wt?.templates;
-		if (!Array.isArray(templates)) return [];
-		return templates.flatMap((template) => {
-			if (!template || typeof template !== "object") return [];
-			const name = typeof template.name === "string" ? template.name.trim() : "";
-			const prefix = typeof template.prefix === "string" ? template.prefix.trim() : "";
-			const base = typeof template.base === "string" ? template.base.trim() : undefined;
-			if (!name || !prefix) return [];
-			return [{ name, prefix, ...(base ? { base } : {}) } satisfies WorktreeTemplate];
-		});
+		const wtSettings = parsed?.wt;
+		const templates = Array.isArray(wtSettings?.templates)
+			? wtSettings.templates.flatMap((template) => {
+					if (!template || typeof template !== "object") return [];
+					const name = typeof template.name === "string" ? template.name.trim() : "";
+					const prefix = typeof template.prefix === "string" ? template.prefix.trim() : "";
+					const base = typeof template.base === "string" ? template.base.trim() : undefined;
+					if (!name || !prefix) return [];
+					return [{ name, prefix, ...(base ? { base } : {}) } satisfies WorktreeTemplate];
+				})
+			: [];
+		const editorCommand =
+			typeof wtSettings?.editorCommand === "string" && wtSettings.editorCommand.trim().length > 0
+				? wtSettings.editorCommand.trim()
+				: null;
+		const terminalCommand =
+			typeof wtSettings?.terminalCommand === "string" && wtSettings.terminalCommand.trim().length > 0
+				? wtSettings.terminalCommand.trim()
+				: null;
+		return { templates, editorCommand, terminalCommand };
 	} catch {
-		return [];
+		return { templates: [], editorCommand: null, terminalCommand: null };
 	}
+}
+
+export function readProjectWorktreeTemplates(repo: RepoState): WorktreeTemplate[] {
+	return readProjectWorktreeSettings(repo).templates;
 }
 
 export function describeCurrentWorkspace(worktree: WorktreeInfo | undefined): string {
@@ -246,12 +270,12 @@ export function workspaceSummary(workspace: WorkspaceTarget): string {
 	return `${prefix} · ${branch}`;
 }
 
-function formatWorkspaceOption(worktree: WorktreeInfo): string {
+function formatWorkspaceOption(worktree: WorktreeInfo, worktreeRoot?: string): string {
 	const title = worktree.isCurrent
 		? `Current checkout · ${workspaceBranchLabel(worktree)}`
 		: worktree.isMainCheckout
 			? `Main checkout · ${workspaceBranchLabel(worktree)}`
-			: `Worktree · ${workspaceBranchLabel(worktree)}`;
+			: workspaceBranchLabel(worktree);
 
 	const flags = [
 		worktree.isCurrent && worktree.isMainCheckout ? "main" : "",
@@ -261,7 +285,11 @@ function formatWorkspaceOption(worktree: WorktreeInfo): string {
 	].filter(Boolean);
 
 	const meta = flags.length > 0 ? ` [${flags.join(", ")}]` : "";
-	return `${title}${meta}\n  ${worktree.path}`;
+	const pathLabel =
+		worktreeRoot && isSubpathOf(worktree.path, worktreeRoot)
+			? relative(worktreeRoot, worktree.path) || basename(worktree.path)
+			: worktree.path;
+	return `${title}${meta}${pathLabel ? ` · ${pathLabel}` : ""}`;
 }
 
 function formatWorktreeTemplateOption(template: WorktreeTemplate): string {
@@ -290,7 +318,11 @@ function shortHead(head: string | null): string | null {
 }
 
 function defaultWorktreePath(mainCheckoutPath: string, worktreeRoot: string, branch: string): string {
-	return join(resolveWorktreeRoot(mainCheckoutPath, worktreeRoot), sanitizeBranchForPath(branch));
+	return join(repoWorktreeRoot(mainCheckoutPath, worktreeRoot), sanitizeBranchForPath(branch));
+}
+
+function repoWorktreeRoot(mainCheckoutPath: string, worktreeRoot: string): string {
+	return join(resolveWorktreeRoot(mainCheckoutPath, worktreeRoot), basename(mainCheckoutPath));
 }
 
 function resolveWorktreeRoot(mainCheckoutPath: string, worktreeRoot: string): string {

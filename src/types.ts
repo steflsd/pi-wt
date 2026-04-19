@@ -64,10 +64,30 @@ export interface PullRequestInfo {
 	headRefName: string;
 }
 
+export interface BranchPublishPlan {
+	remote: string | null;
+	upstream: string | null;
+	needsPush: boolean;
+	reason: string | null;
+	commandArgs: string[] | null;
+}
+
+export interface PullRequestDraft {
+	title: string;
+	body: string;
+	promptPath: string;
+}
+
 export interface WorktreeTemplate {
 	name: string;
 	prefix: string;
 	base?: string;
+}
+
+export interface WorktreeProjectSettings {
+	templates: WorktreeTemplate[];
+	editorCommand: string | null;
+	terminalCommand: string | null;
 }
 
 export type SessionSelectionMode = "auto" | "pick" | "new";
@@ -77,10 +97,14 @@ export type WtCommand =
 	| { kind: "status" }
 	| { kind: "rebase"; explicitBase?: string }
 	| { kind: "pr"; explicitBase?: string }
+	| { kind: "editor" }
+	| { kind: "terminal" }
 	| { kind: "help" };
 
 export const WORKTREE_ROOT_FLAG = "wt-root";
 export const WT_SETUP_FLAG = "wt-setup";
-export const WORKTREE_SETUP_SCRIPT = ".pi/wt-setup.sh";
+export const WORKTREE_CONFIG_DIR = ".pi/wt";
+export const WORKTREE_SETUP_SCRIPT = ".pi/wt/setup.sh";
+export const LEGACY_WORKTREE_SETUP_SCRIPT = ".pi/wt-setup.sh";
 export const DEFAULT_WORKTREE_ROOT = "../worktrees";
 export const WT_STATE_STATUS_KEY = "pi-wt-state";

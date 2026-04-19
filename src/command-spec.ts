@@ -13,6 +13,8 @@ export function getWtArgumentCompletions(prefix: string) {
 			label: "update the current branch by rebasing onto its detected base branch; requires a clean working tree",
 		},
 		{ value: "pr", label: "view or create a PR for the current branch" },
+		{ value: "editor", label: "open the current worktree in your configured editor" },
+		{ value: "terminal", label: "open the current worktree in your configured terminal" },
 		{ value: "help", label: "show /wt usage" },
 	];
 
@@ -51,6 +53,16 @@ export function parseWtCommand(args: string): WtCommand {
 		return { kind: "pr", explicitBase: trailing || undefined };
 	}
 
+	if (normalized === "editor") {
+		if (trailing) throw new Error("Usage: /wt editor");
+		return { kind: "editor" };
+	}
+
+	if (normalized === "terminal") {
+		if (trailing) throw new Error("Usage: /wt terminal");
+		return { kind: "terminal" };
+	}
+
 	if (normalized === "help") {
 		return { kind: "help" };
 	}
@@ -67,5 +79,7 @@ export function wtUsageText(): string {
 		"/wt status        Show current branch, base branch, and PR info",
 		"/wt rebase [base] Update current branch by rebasing onto detected or explicit base branch; requires a clean working tree",
 		"/wt pr [base]     View current PR, or create one against detected or explicit base branch",
+		"/wt editor        Open the current worktree in your configured editor",
+		"/wt terminal      Open the current worktree in your configured terminal",
 	].join("\n");
 }

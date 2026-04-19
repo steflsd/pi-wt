@@ -4,6 +4,7 @@ import { safeRealpath } from "./shared.js";
 import {
 	type BaseBranchSelection,
 	type BranchInfo,
+	type BranchPublishPlan,
 	type ExecResult,
 	type PullRequestInfo,
 	type RepoState,
@@ -162,7 +163,7 @@ export async function detectBaseBranch(
 		);
 	}
 
-	if (repo.defaultBranch) {
+	if (repo.defaultBranch && normalizeBranchName(repo.defaultBranch) !== normalizeBranchName(currentBranch)) {
 		return resolveBaseBranchSelection(pi, cwd, repo.defaultBranch, "default branch");
 	}
 
@@ -226,6 +227,53 @@ export async function readGitConfig(pi: ExtensionAPI, cwd: string, key: string):
 	return result.code === 0 && value ? value : null;
 }
 
+export async function planCurrentBranchPublish(
+	pi: ExtensionAPI,
+	cwd: string,
+	currentBranch: string,
+): Promise<BranchPublishPlan> {
+	const upstream = await readCurrentBranchUpstream(pi, cwd);
+	if (upstream) {
+		const aheadBehind = await readAheadBehind(pi, cwd, upstream);
+		if (aheadBehind && aheadBehind.ahead > 0) {
+			return {
+				remote: upstreamRemoteName(upstream),
+				upstream,
+				needsPush: true,
+				reason: `${currentBranch} is ${aheadBehind.ahead} commit(s) ahead of ${upstream}`,
+				commandArgs: ["push"],
+			};
+		}
+
+		return {
+			remote: upstreamRemoteName(upstream),
+			upstream,
+			needsPush: false,
+			reason: null,
+			commandArgs: null,
+		};
+	}
+
+	const remote = await detectPushRemote(pi, cwd, currentBranch);
+	if (!remote) {
+		return {
+			remote: null,
+			upstream: null,
+			needsPush: true,
+			reason: `${currentBranch} is not published and no push remote could be determined`,
+			commandArgs: null,
+		};
+	}
+
+	return {
+		remote,
+		upstream: null,
+		needsPush: true,
+		reason: `${currentBranch} is not published yet`,
+		commandArgs: ["push", "--set-upstream", remote, currentBranch],
+	};
+}
+
 export async function writeGitConfig(pi: ExtensionAPI, cwd: string, key: string, value: string): Promise<void> {
 	const result = await exec(pi, "git", ["config", key, value], cwd);
 	if (result.code !== 0) {
@@ -233,11 +281,27 @@ export async function writeGitConfig(pi: ExtensionAPI, cwd: string, key: string,
 	}
 }
 
-export async function refreshWorktreeStateStatus(pi: ExtensionAPI, ctx: ExtensionContext): Promise<void> {
+export async function refreshWorktreeStateStatus(
+	pi: ExtensionAPI,
+	ctx: ExtensionContext,
+	cwd: string = ctx.cwd,
+): Promise<void> {
 	if (!ctx.hasUI) return;
 
-	const repo = await inspectRepo(pi, ctx.cwd);
-	if (!repo) {
+	const repo = await inspectRepo(pi, cwd);
+	if (!repo?.currentBranch) {
+		ctx.ui.setStatus(WT_STATE_STATUS_KEY, undefined);
+		return;
+	}
+
+	const currentWorktree = repo.worktrees.find((worktree) => worktree.isCurrent);
+	if (!currentWorktree || currentWorktree.isMainCheckout) {
+		ctx.ui.setStatus(WT_STATE_STATUS_KEY, undefined);
+		return;
+	}
+
+	const baseBranch = await readGitConfig(pi, repo.cwd, `branch.${repo.currentBranch}.wt-parent`);
+	if (!baseBranch) {
 		ctx.ui.setStatus(WT_STATE_STATUS_KEY, undefined);
 		return;
 	}
@@ -248,7 +312,7 @@ export async function refreshWorktreeStateStatus(pi: ExtensionAPI, ctx: Extensio
 		trackedChanges.length > 0
 			? ctx.ui.theme.fg(
 					"error",
-					`/wt rebase blocked: tracked changes (${trackedChanges.length}) — clean working tree required`,
+					`/wt rebase onto ${normalizeBranchName(baseBranch)} blocked: tracked changes (${trackedChanges.length}) — clean working tree required`,
 				)
 			: undefined,
 	);
@@ -273,6 +337,70 @@ export async function readWorktreeChanges(pi: ExtensionAPI, cwd: string): Promis
 async function verifyRef(pi: ExtensionAPI, cwd: string, branchish: string): Promise<boolean> {
 	const result = await exec(pi, "git", ["rev-parse", "--verify", "--quiet", branchish], cwd);
 	return result.code === 0;
+}
+
+async function readCurrentBranchUpstream(pi: ExtensionAPI, cwd: string): Promise<string | null> {
+	const result = await exec(pi, "git", ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"], cwd);
+	const value = result.stdout.trim();
+	return result.code === 0 && value ? value : null;
+}
+
+async function readAheadBehind(
+	pi: ExtensionAPI,
+	cwd: string,
+	upstream: string,
+): Promise<{ ahead: number; behind: number } | null> {
+	const result = await exec(pi, "git", ["rev-list", "--left-right", "--count", `${upstream}...HEAD`], cwd);
+	if (result.code !== 0) {
+		return null;
+	}
+
+	const [behindRaw, aheadRaw] = result.stdout.trim().split(/\s+/);
+	const behind = Number.parseInt(behindRaw ?? "", 10);
+	const ahead = Number.parseInt(aheadRaw ?? "", 10);
+	if (Number.isNaN(behind) || Number.isNaN(ahead)) {
+		return null;
+	}
+
+	return { ahead, behind };
+}
+
+async function detectPushRemote(pi: ExtensionAPI, cwd: string, currentBranch: string): Promise<string | null> {
+	const remotes = await listGitRemotes(pi, cwd);
+	if (remotes.length === 0) {
+		return null;
+	}
+
+	const configuredRemote =
+		(await readGitConfig(pi, cwd, `branch.${currentBranch}.pushRemote`)) ??
+		(await readGitConfig(pi, cwd, "remote.pushDefault")) ??
+		(await readGitConfig(pi, cwd, `branch.${currentBranch}.remote`));
+	if (configuredRemote && remotes.includes(configuredRemote)) {
+		return configuredRemote;
+	}
+
+	if (remotes.includes("origin")) {
+		return "origin";
+	}
+
+	return remotes.length === 1 ? remotes[0] : null;
+}
+
+async function listGitRemotes(pi: ExtensionAPI, cwd: string): Promise<string[]> {
+	const result = await exec(pi, "git", ["remote"], cwd);
+	if (result.code !== 0) {
+		return [];
+	}
+
+	return result.stdout
+		.split(/\r?\n/)
+		.map((line) => line.trim())
+		.filter(Boolean);
+}
+
+function upstreamRemoteName(upstream: string): string | null {
+	const [remote] = upstream.split("/", 1);
+	return remote || null;
 }
 
 async function refExists(pi: ExtensionAPI, cwd: string, ref: string): Promise<boolean> {

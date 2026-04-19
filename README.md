@@ -9,7 +9,8 @@ Open Pi once, usually from your main checkout, then use `/wt` to:
 - jump to an existing worktree under your configured worktree root,
 - create a fresh worktree for a new task and switch into a Pi session there,
 - inspect the current branch / detected base branch with `/wt status`,
-- update the current branch by rebasing onto its detected base branch with `/wt rebase` (clean working tree required), or
+- update the current branch by rebasing onto its detected base branch with `/wt rebase` (clean working tree required),
+- open the current worktree in your editor or terminal with `/wt editor` and `/wt terminal`, or
 - view/create a PR with `/wt pr`
 
 ## Design
@@ -58,7 +59,7 @@ git config branch.<new-branch>.wt-parent <base-branch>
 If the repo contains a shared setup script at:
 
 ```text
-.pi/wt-setup.sh
+.pi/wt/setup.sh
 ```
 
 `pi-wt` runs it inside the new worktree before switching sessions.
@@ -78,7 +79,7 @@ After that, it switches into the most recent Pi session for that workspace, or c
 By default, new worktrees are created under:
 
 ```text
-../worktrees/<sanitized-branch>
+../worktrees/<repo-name>/<sanitized-branch>
 ```
 
 relative to the repo's main checkout.
@@ -99,18 +100,21 @@ Optional modes:
 
 ### Branch/PR commands
 
-- `/wt status` — show repo root, current worktree, current branch, default branch, detected base branch, and current PR (if any)
+- `/wt status` — show repo root, current worktree, current branch, and default branch; on non-default branches it also shows the detected base branch and current PR (if any)
 - `/wt rebase` — rebase the current branch onto the detected base branch (clean working tree required)
+  - Pi only shows the startup `/wt rebase ... blocked` status for linked worktrees created from a recorded base branch (`branch.<name>.wt-parent`), not for the repo's main checkout
 - `/wt rebase <branch>` — rebase onto an explicit branch instead
-- `/wt pr` — show the current branch's PR, or create one if none exists yet
+- `/wt pr` — show the current branch's PR, or create one if none exists yet; if the branch is unpublished or ahead of its upstream, `/wt pr` pushes it first as needed and drafts the PR title/body with the active model
 - `/wt pr <branch>` — create the PR against an explicit base branch instead
+- `/wt editor` — open the current worktree in your configured editor
+- `/wt terminal` — open the current worktree in your configured terminal
 
 Base-branch detection order for `/wt rebase` and `/wt pr`:
 
 1. current PR base branch via `gh pr view`
 2. configured base branch via `git config branch.<name>.wt-parent`
 3. configured base branch via `git config branch.<name>.gh-merge-base`
-4. repo default branch from `origin/HEAD`
+4. repo default branch from `origin/HEAD` (only when the current branch is not already the default branch)
 
 ## Configuration
 
@@ -118,10 +122,14 @@ This extension uses pi's standard project-local `.pi/` directory.
 
 Shared project setup:
 
-- `.pi/wt-setup.sh` — optional repo-local setup script run inside newly created worktrees
-- `.pi/settings.json` — optional project-local worktree templates
+- `.pi/wt/setup.sh` — optional repo-local setup script run inside newly created worktrees
+- `.pi/wt/pr.md` — optional repo-local prompt override for `/wt pr` title/body drafting
+- `.pi/settings.json` — optional project-local worktree templates and open commands
 
-Minimal template example:
+If `.pi/wt/pr.md` is missing, `pi-wt` uses its bundled default prompt.
+Legacy `.pi/wt-setup.sh` and `.pi/wt-pr.md` are still accepted for compatibility.
+
+Example `.pi/settings.json`:
 
 ```json
 {
@@ -130,17 +138,21 @@ Minimal template example:
       { "name": "feature", "prefix": "feature/", "base": "main" },
       { "name": "fix", "prefix": "fix/", "base": "main" },
       { "name": "spike", "prefix": "spike/" }
-    ]
+    ],
+    "editorCommand": "cursor {{path}}",
+    "terminalCommand": "open -a Terminal {{path}}"
   }
 }
 ```
 
 When templates are present, `/wt` shows a lightweight template picker before the normal base-branch / branch-name prompts.
 
+For `/wt editor` and `/wt terminal`, `{{path}}` is replaced with the current worktree path. If the command does not include `{{path}}`, `pi-wt` appends the current worktree path automatically.
+
 CLI flags:
 
-- `--wt-root` — root directory for newly created worktrees
-- `--wt-setup` — optional fallback shell command to run when `.pi/wt-setup.sh` is not present
+- `--wt-root` — base directory for newly created worktrees; actual paths are `<wt-root>/<repo-name>/<branch-name>`
+- `--wt-setup` — optional fallback shell command to run when `.pi/wt/setup.sh` is not present
 
 Examples:
 
@@ -155,12 +167,16 @@ Relative `--wt-root` values are resolved from the repo's main checkout.
 ## Notes
 
 - Uses raw `git worktree`, `git rebase`, and `gh pr` commands
+- `/wt editor` and `/wt terminal` use configured commands from `.pi/settings.json` when present
+- Without config, `pi-wt` falls back to `$VISUAL`/`$EDITOR` for `/wt editor` and best-effort platform defaults for `/wt terminal`
 - Only shows existing worktrees under the configured worktree root
 - By default, `/wt` resumes the most recent session in the selected workspace
 - Use `/wt pick` to choose a session explicitly
 - Use `/wt new` to force a fresh session
-- `.pi/wt-setup.sh` takes precedence over `--wt-setup`
+- `.pi/wt/setup.sh` takes precedence over `--wt-setup`
 - `/wt pr` requires the GitHub CLI (`gh`)
+- `/wt pr` will push the current branch first when needed so `gh pr create` can run non-interactively
+- `/wt pr` uses the active model to draft the PR title/body from `.pi/wt/pr.md` when available, and falls back to `gh pr create --fill` if drafting fails or no model is selected
 - No `tmux`
 - No `worktrunk` dependency in v1
 

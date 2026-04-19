@@ -1,5 +1,5 @@
 import type { ExtensionAPI, ExtensionCommandContext } from "@mariozechner/pi-coding-agent";
-import { detectBaseBranch, formatPrState, inspectRepo, readCurrentPr } from "../git.js";
+import { detectBaseBranch, formatPrState, inspectRepo, normalizeBranchName, readCurrentPr } from "../git.js";
 import { describeCurrentWorkspace } from "../worktrees.js";
 
 export async function handleStatusCommand(pi: ExtensionAPI, ctx: ExtensionCommandContext): Promise<void> {
@@ -10,8 +10,13 @@ export async function handleStatusCommand(pi: ExtensionAPI, ctx: ExtensionComman
 	}
 
 	const currentWorktree = repo.worktrees.find((worktree) => worktree.isCurrent);
-	const pr = await readCurrentPr(pi, repo.cwd);
-	const baseBranch = repo.currentBranch ? await detectBaseBranch(pi, repo, repo.cwd, repo.currentBranch) : null;
+	const isDefaultBranch =
+		repo.currentBranch && repo.defaultBranch
+			? normalizeBranchName(repo.currentBranch) === normalizeBranchName(repo.defaultBranch)
+			: false;
+	const pr = isDefaultBranch ? null : await readCurrentPr(pi, repo.cwd);
+	const baseBranch =
+		repo.currentBranch && !isDefaultBranch ? await detectBaseBranch(pi, repo, repo.cwd, repo.currentBranch) : null;
 
 	const lines = [
 		`Repo root: ${repo.repoRoot}`,
@@ -20,8 +25,12 @@ export async function handleStatusCommand(pi: ExtensionAPI, ctx: ExtensionComman
 		`Workspace: ${describeCurrentWorkspace(currentWorktree)}`,
 		`Branch: ${repo.currentBranch ?? "(detached HEAD)"}`,
 		`Default branch: ${repo.defaultBranch ?? "(unknown)"}`,
-		`Detected base: ${baseBranch ? `${baseBranch.name} (${baseBranch.source})` : "(none)"}`,
-		pr ? `PR: #${pr.number} ${pr.title} [${formatPrState(pr)}]\n  ${pr.url}` : "PR: (none)",
+		...(isDefaultBranch
+			? []
+			: [
+					`Detected base: ${baseBranch ? `${baseBranch.name} (${baseBranch.source})` : "(none)"}`,
+					pr ? `PR: #${pr.number} ${pr.title} [${formatPrState(pr)}]\n  ${pr.url}` : "PR: (none)",
+				]),
 	];
 
 	ctx.ui.notify(lines.join("\n"), "info");
