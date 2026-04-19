@@ -1,4 +1,4 @@
-import { realpathSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import {
@@ -56,6 +56,8 @@ interface WorkspaceMenuChoice {
 type SessionSelectionMode = "auto" | "pick" | "new";
 
 const WORKTREE_ROOT_FLAG = "wt-root";
+const WT_SETUP_FLAG = "wt-setup";
+const WORKTREE_SETUP_SCRIPT = ".pi/wt-setup.sh";
 const DEFAULT_WORKTREE_ROOT = "../worktrees";
 
 export default function (pi: ExtensionAPI) {
@@ -63,6 +65,12 @@ export default function (pi: ExtensionAPI) {
 		description: "Root directory for new worktrees. Relative paths are resolved from the repo's main checkout.",
 		type: "string",
 		default: DEFAULT_WORKTREE_ROOT,
+	});
+
+	pi.registerFlag(WT_SETUP_FLAG, {
+		description: "Optional shell command to run inside a newly created worktree before switching sessions.",
+		type: "string",
+		default: "",
 	});
 
 	pi.registerCommand("wt", {
@@ -88,7 +96,13 @@ export default function (pi: ExtensionAPI) {
 				const workspace =
 					menuChoice.type === "workspace"
 						? menuChoice.workspace
-						: await createWorktreeFlow(pi, ctx, repo, getConfiguredWorktreeRoot(pi));
+						: await createWorktreeFlow(
+								pi,
+								ctx,
+								repo,
+								getConfiguredWorktreeRoot(pi),
+								getConfiguredSetupStep(pi, repo),
+							);
 				if (!workspace) {
 					return;
 				}
@@ -160,6 +174,26 @@ function parseSessionSelectionMode(args: string): SessionSelectionMode {
 function getConfiguredWorktreeRoot(pi: ExtensionAPI): string {
 	const configured = pi.getFlag(WORKTREE_ROOT_FLAG);
 	return typeof configured === "string" && configured.trim().length > 0 ? configured.trim() : DEFAULT_WORKTREE_ROOT;
+}
+
+interface SetupStep {
+	label: string;
+	command: string;
+}
+
+function getConfiguredSetupStep(pi: ExtensionAPI, repo: RepoState): SetupStep | null {
+	const projectScriptPath = join(repo.mainCheckoutPath, WORKTREE_SETUP_SCRIPT);
+	if (existsSync(projectScriptPath)) {
+		return {
+			label: projectScriptPath,
+			command: `bash ${quoteShellArg(`./${WORKTREE_SETUP_SCRIPT}`)}`,
+		};
+	}
+
+	const configured = pi.getFlag(WT_SETUP_FLAG);
+	if (typeof configured !== "string") return null;
+	const command = configured.trim();
+	return command.length > 0 ? { label: command, command } : null;
 }
 
 async function inspectRepo(pi: ExtensionAPI, cwd: string): Promise<RepoState | null> {
@@ -313,6 +347,7 @@ async function createWorktreeFlow(
 	ctx: ExtensionCommandContext,
 	repo: RepoState,
 	worktreeRoot: string,
+	setupStep: SetupStep | null,
 ): Promise<WorkspaceTarget | undefined> {
 	const baseBranch = await chooseBaseBranch(ctx, repo.branches);
 	if (!baseBranch) {
@@ -327,10 +362,11 @@ async function createWorktreeFlow(
 
 	const targetPath = defaultWorktreePath(repo.mainCheckoutPath, worktreeRoot, newBranchName);
 
-	const confirmed = await ctx.ui.confirm(
-		"Create worktree",
-		[`Base branch: ${baseBranch.name}`, `New branch: ${newBranchName}`, `Path: ${targetPath}`].join("\n"),
-	);
+	const confirmationLines = [`Base branch: ${baseBranch.name}`, `New branch: ${newBranchName}`, `Path: ${targetPath}`];
+	if (setupStep) {
+		confirmationLines.push(`Setup: ${setupStep.label}`);
+	}
+	const confirmed = await ctx.ui.confirm("Create worktree", confirmationLines.join("\n"));
 	if (!confirmed) {
 		ctx.ui.notify("Cancelled", "info");
 		return undefined;
@@ -350,6 +386,19 @@ async function createWorktreeFlow(
 	);
 	if (created.code !== 0) {
 		throw new Error(created.stderr.trim() || `Failed to create worktree ${targetPath}`);
+	}
+
+	if (setupStep) {
+		ctx.ui.setStatus("pi-wt", `Running setup in ${newBranchName}...`);
+		try {
+			const setup = await execShell(pi, setupStep.command, targetPath);
+			if (setup.code !== 0) {
+				throw new Error(setup.stderr.trim() || setup.stdout.trim() || `Setup failed in ${targetPath}`);
+			}
+			ctx.ui.notify(`Setup finished: ${setupStep.label}`, "info");
+		} finally {
+			ctx.ui.setStatus("pi-wt", undefined);
+		}
 	}
 
 	return {
@@ -514,6 +563,15 @@ async function exec(pi: ExtensionAPI, command: string, args: string[], cwd: stri
 		stderr: result.stderr ?? "",
 		code: result.code ?? null,
 	};
+}
+
+async function execShell(pi: ExtensionAPI, command: string, cwd: string): Promise<ExecResult> {
+	const shell = process.env.SHELL || "bash";
+	return exec(pi, shell, ["-lc", command], cwd);
+}
+
+function quoteShellArg(value: string): string {
+	return `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
 function safeRealpath(path: string): string {

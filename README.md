@@ -6,7 +6,7 @@ A Pi extension for creating and switching git workspaces from inside Pi.
 
 Open Pi once, usually from your main checkout, then use `/wt` to either:
 
-- jump to an existing active worktree, or
+- jump to an existing worktree under your configured worktree root, or
 - create a fresh worktree for a new task and switch into a Pi session there
 
 ## Design
@@ -31,17 +31,14 @@ Run:
 
 You will see:
 
-- the **current checkout**
-- the **main checkout**
-- any **existing linked worktrees**
 - **Create new worktree…**
+- any **existing linked worktrees** under the configured worktree root
 
 If you choose **Create new worktree…**, `pi-wt` asks for:
 
 1. **base branch**
 2. **new branch name**
-3. optional **path override**
-4. confirmation
+3. confirmation
 
 Then it runs the equivalent of:
 
@@ -49,7 +46,23 @@ Then it runs the equivalent of:
 git worktree add -b <new-branch> <path> <base-branch>
 ```
 
-and switches into the most recent Pi session for that new workspace, or creates one if none exists.
+If the repo contains a shared setup script at:
+
+```text
+.pi/wt-setup.sh
+```
+
+`pi-wt` runs it inside the new worktree before switching sessions.
+
+A typical example is:
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+pnpm install
+```
+
+After that, it switches into the most recent Pi session for that workspace, or creates one if none exists.
 
 ## Default worktree path
 
@@ -75,22 +88,35 @@ Optional modes:
 
 ## Configuration
 
-This extension registers a CLI flag:
+This extension uses pi's standard project-local `.pi/` directory.
 
-- `--wt-root`
+Shared project setup:
+
+- `.pi/wt-setup.sh` — optional repo-local setup script run inside newly created worktrees
+
+CLI flags:
+
+- `--wt-root` — root directory for newly created worktrees
+- `--wt-setup` — optional fallback shell command to run when `.pi/wt-setup.sh` is not present
 
 Examples:
 
 ```bash
 pi -e /Users/steflsd/src/steflsd/pi-wt --wt-root ../worktrees
 pi -e /Users/steflsd/src/steflsd/pi-wt --wt-root /Users/steflsd/src/worktrees
+pi -e /Users/steflsd/src/steflsd/pi-wt --wt-setup "pnpm install"
 ```
 
-Relative paths are resolved from the repo's main checkout.
+Relative `--wt-root` values are resolved from the repo's main checkout.
 
 ## Notes
 
 - Uses raw `git worktree` commands
+- Only shows existing worktrees under the configured worktree root
+- By default, `/wt` resumes the most recent session in the selected workspace
+- Use `/wt pick` to choose a session explicitly
+- Use `/wt new` to force a fresh session
+- `.pi/wt-setup.sh` takes precedence over `--wt-setup`
 - No `tmux`
 - No `worktrunk` dependency in v1
 
