@@ -45,6 +45,7 @@
 		"lint": "biome check --error-on-warnings .",
 		"typecheck": "tsc --noEmit",
 		"check": "biome check --write --error-on-warnings . && pnpm run typecheck",
+		"update": "pnpm up -i -L",
 		"prepublishOnly": "pnpm run check"
 	}
 }
