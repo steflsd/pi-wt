@@ -2,10 +2,9 @@ import type { ExtensionAPI, ExtensionCommandContext } from "@mariozechner/pi-cod
 import { SessionManager } from "@mariozechner/pi-coding-agent";
 import { inspectRepo } from "../git.js";
 import { chooseSession, describeSession, listSessions, persistNewSessionHeader } from "../sessions.js";
-import type { SessionSelectionMode, WorkspaceTarget } from "../types.js";
+import type { WorkspaceTarget } from "../types.js";
 import {
 	archiveWorktreeAtPathFlow,
-	archiveWorktreeFlow,
 	chooseWorkspaceTarget,
 	createWorktreeFlow,
 	getConfiguredSetupStep,
@@ -13,12 +12,9 @@ import {
 	readProjectWorktreeSettings,
 	workspaceSummary,
 } from "../worktrees.js";
+import { launchWorktreeInNewTab } from "./open.js";
 
-export async function handleWorkspaceCommand(
-	pi: ExtensionAPI,
-	ctx: ExtensionCommandContext,
-	sessionMode: SessionSelectionMode,
-): Promise<void> {
+export async function handleWorkspaceCommand(pi: ExtensionAPI, ctx: ExtensionCommandContext): Promise<void> {
 	const worktreeRoot = getConfiguredWorktreeRoot(pi);
 	let workspace: WorkspaceTarget | undefined;
 	while (!workspace) {
@@ -36,33 +32,38 @@ export async function handleWorkspaceCommand(
 		}
 
 		if (menuChoice.type === "archive-worktree") {
+			const archivingCurrentWorktree = menuChoice.worktreePath === repo.cwd;
 			if (menuChoice.worktreePath) {
 				await archiveWorktreeAtPathFlow(pi, ctx, repo, worktreeRoot, menuChoice.worktreePath);
-			} else {
-				await archiveWorktreeFlow(pi, ctx, repo, worktreeRoot);
+			}
+			if (archivingCurrentWorktree) {
+				return;
 			}
 			continue;
 		}
 
-		workspace =
-			menuChoice.type === "workspace"
-				? menuChoice.workspace
-				: await createWorktreeFlow(
-						pi,
-						ctx,
-						repo,
-						worktreeRoot,
-						getConfiguredSetupStep(pi, repo),
-						settings.templates,
-						settings.branchPickerLimit,
-					);
-		if (!workspace) {
+		if (menuChoice.type === "workspace") {
+			workspace = menuChoice.workspace;
+		} else {
+			const created = await createWorktreeFlow(
+				pi,
+				ctx,
+				repo,
+				worktreeRoot,
+				getConfiguredSetupStep(pi, repo),
+				settings.templates,
+				settings.branchPickerLimit,
+			);
+			if (!created) {
+				return;
+			}
+			await launchWorktreeInNewTab(pi, ctx, repo, created.cwd);
 			return;
 		}
 	}
 
 	const sessions = await listSessions(workspace.cwd);
-	if (sessionMode !== "new" && sessions.length > 0) {
+	if (sessions.length > 0) {
 		const selected = await chooseSession(ctx, workspace, sessions);
 		if (!selected) {
 			ctx.ui.notify("Cancelled", "info");

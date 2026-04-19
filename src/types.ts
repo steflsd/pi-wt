@@ -90,16 +90,14 @@ export interface WorktreeProjectSettings {
 	branchPickerLimit: number;
 	editorCommand: string | null;
 	terminalCommand: string | null;
+	newWorktreeTabCommand: string | null;
 }
 
-export type SessionSelectionMode = "auto" | "new";
-
 export type WtCommand =
-	| { kind: "workspace"; sessionMode: SessionSelectionMode }
+	| { kind: "workspace" }
 	| { kind: "status" }
 	| { kind: "rebase"; explicitBase?: string }
 	| { kind: "pr"; explicitBase?: string }
-	| { kind: "archive" }
 	| { kind: "editor" }
 	| { kind: "terminal" }
 	| { kind: "help" };

@@ -35,6 +35,28 @@ export async function chooseSession(
 	return selected ? byLabel.get(selected) : undefined;
 }
 
+export async function switchToLatestOrCreateSession(
+	ctx: ExtensionCommandContext,
+	workspace: WorkspaceTarget,
+): Promise<{ cancelled: boolean; session?: SessionInfo; created: boolean }> {
+	const sessions = await listSessions(workspace.cwd);
+	if (sessions.length > 0) {
+		await ctx.waitForIdle();
+		const result = await ctx.switchSession(sessions[0].path);
+		return { cancelled: result.cancelled, session: sessions[0], created: false };
+	}
+
+	await ctx.waitForIdle();
+	const sessionManager = SessionManager.create(workspace.cwd);
+	const sessionFile = sessionManager.getSessionFile();
+	if (!sessionFile) {
+		throw new Error(`Failed to prepare session file for ${workspace.cwd}`);
+	}
+	await persistNewSessionHeader(sessionManager, sessionFile);
+	const result = await ctx.switchSession(sessionFile);
+	return { cancelled: result.cancelled, created: true };
+}
+
 export function describeSession(session: SessionInfo): string {
 	const label = session.name?.trim() || session.firstMessage?.trim() || session.id;
 	const when = session.modified.toLocaleString();

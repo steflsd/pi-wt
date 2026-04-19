@@ -7,7 +7,7 @@ A Pi extension for worktree-aware git workflows inside Pi.
 Open Pi once, usually from your main checkout, then use `/wt` to:
 
 - jump to an existing worktree under your configured worktree root,
-- create a fresh worktree for a new task and switch into a Pi session there,
+- create a fresh worktree for a new task and either switch into it here or open it in a terminal,
 - inspect the current branch / detected base branch with `/wt status`,
 - update the current branch by rebasing onto its detected base branch with `/wt rebase` (clean working tree required),
 - open the current worktree in your editor or terminal with `/wt editor` and `/wt term`, or
@@ -36,17 +36,21 @@ Run:
 You will see:
 
 - **Create new worktree…**
-- any **existing linked worktrees** under the configured worktree root
+- any **existing linked worktrees** under the configured worktree root, including the current one when you're already in a linked worktree
 
-From that list, press **`a`** to archive the currently highlighted linked worktree.
+From that list, press **`a`** to archive the currently highlighted linked worktree. If it's the current worktree, `pi-wt` switches away first and checks out its recorded base branch before archiving.
 
 If you choose **Create new worktree…**, `pi-wt` asks for:
 
 1. **base branch**
    - the list shows the most recent local branches first
    - if the branch you want is older, choose **Other branch…** and type its name
-2. **new branch name**
-3. confirmation
+2. if the current worktree is dirty **and** the selected base branch is the current branch, choose whether to:
+   - create a clean worktree, or
+   - move the current worktree's local changes into the new worktree (tracked + untracked)
+3. **new branch name**
+4. confirmation
+5. **open here** or **open in terminal**
 
 Then it runs the equivalent of:
 
@@ -59,6 +63,8 @@ After creation, `pi-wt` also stores the chosen base branch in git config:
 ```bash
 git config branch.<new-branch>.wt-parent <base-branch>
 ```
+
+If you choose to move local changes, `pi-wt` stashes the current worktree's tracked + untracked changes, applies them in the new worktree, and removes the stash entry only after a successful apply.
 
 If the repo contains a shared setup script at:
 
@@ -76,7 +82,7 @@ set -euo pipefail
 pnpm install
 ```
 
-After that, it lets you choose a Pi session for that workspace, or creates one if none exists.
+After creation, `pi-wt` opens the new worktree in a new terminal tab, starts `pi` there, and leaves the current Pi session alone.
 
 ## Default worktree path
 
@@ -96,10 +102,7 @@ By default:
 
 - `/wt` lets you choose from existing sessions in the selected workspace
 - if no session exists yet, `/wt` creates one
-
-Optional modes:
-
-- `/wt new` — force creation of a fresh session in that workspace
+- when creating a new worktree, `/wt` opens it in a new terminal tab and starts `pi`
 
 ### Branch/PR commands
 
@@ -109,7 +112,6 @@ Optional modes:
 - `/wt rebase <branch>` — rebase onto an explicit branch instead
 - `/wt pr` — show the current branch's PR, or create one if none exists yet; if the branch is unpublished or ahead of its upstream, `/wt pr` pushes it first as needed and drafts the PR title/body with the active model
 - `/wt pr <branch>` — create the PR against an explicit base branch instead
-- `/wt archive` — remove a linked worktree under the configured worktree root; if its local branch is safely merged into its recorded base branch (or the repo default branch), `pi-wt` also deletes that local branch with `git branch -d` (requires a clean worktree)
 - `/wt editor` — open the current worktree in your configured editor
 - `/wt term` — open the current worktree in your configured terminal
 
@@ -144,7 +146,8 @@ Example `.pi/settings.json`:
     ],
     "branchPickerLimit": 12,
     "editorCommand": "cursor {{path}}",
-    "terminalCommand": "open -a Terminal {{path}}"
+    "terminalCommand": "open -a Terminal {{path}}",
+    "newWorktreeTabCommand": "wezterm start --cwd {{path}} pi"
   }
 }
 ```
@@ -154,6 +157,8 @@ When templates are present, `/wt` shows a lightweight template list before the n
 `wt.branchPickerLimit` controls how many recent local branches are shown before falling back to **Other branch…**. If unset, the default is `12`.
 
 For `/wt editor` and `/wt term`, `{{path}}` is replaced with the current worktree path. If the command does not include `{{path}}`, `pi-wt` appends the current worktree path automatically.
+
+For opening a newly created worktree in a new tab, `wt.newWorktreeTabCommand` can use `{{path}}` and optionally `{{command}}` (which defaults to `pi`). If `{{command}}` is omitted, `pi-wt` appends `pi` automatically.
 
 `/wt term` also checks `TERM_PROGRAM` on macOS when `wt.terminalCommand` is not configured, so it can reuse the current terminal app for common terminals like Terminal, iTerm, Ghostty, WezTerm, and Warp.
 
@@ -176,11 +181,12 @@ Relative `--wt-root` values are resolved from the repo's main checkout.
 
 - Uses raw `git worktree`, `git rebase`, `git branch -d`, and `gh pr` commands
 - `/wt editor` and `/wt term` use configured commands from `.pi/settings.json` when present
+- Newly created worktrees can be opened in a new tab and start `pi`; configure `wt.newWorktreeTabCommand` to override the default launcher
 - Without config, `pi-wt` falls back to `$VISUAL`/`$EDITOR` for `/wt editor` and best-effort platform defaults for `/wt term`
 - On macOS, `/wt term` prefers the current `TERM_PROGRAM` when recognized before falling back to Terminal.app
 - Only shows existing worktrees under the configured worktree root
 - By default, `/wt` lets you choose a session in the selected workspace
-- Use `/wt new` to force a fresh session
+- Creating a new worktree opens it in a new tab and starts `pi`, leaving the current Pi session alone
 - `.pi/wt/setup.sh` takes precedence over `--wt-setup`
 - `/wt pr` requires the GitHub CLI (`gh`)
 - `/wt pr` will push the current branch first when needed so `gh pr create` can run non-interactively

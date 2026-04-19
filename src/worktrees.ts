@@ -13,6 +13,7 @@ import {
 	readWorktreeChanges,
 	writeGitConfig,
 } from "./git.js";
+import { switchToLatestOrCreateSession } from "./sessions.js";
 import { safeRealpath, toErrorMessage } from "./shared.js";
 import {
 	type BranchInfo,
@@ -46,6 +47,16 @@ interface WorkspacePickerItem {
 	selectItem: SelectItem;
 }
 
+interface CreateWorktreeModeSelection {
+	mode: "clean" | "move-current-changes";
+	changeCount: number;
+}
+
+interface StashedWorktreeChanges {
+	oid: string;
+	changeCount: number;
+}
+
 export function getConfiguredWorktreeRoot(pi: ExtensionAPI): string {
 	const configured = pi.getFlag(WORKTREE_ROOT_FLAG);
 	return typeof configured === "string" && configured.trim().length > 0 ? configured.trim() : DEFAULT_WORKTREE_ROOT;
@@ -73,7 +84,7 @@ export async function chooseWorkspaceTarget(
 ): Promise<WorkspaceMenuChoice | undefined> {
 	const resolvedWorktreeRoot = resolveWorktreeRoot(repo.mainCheckoutPath, worktreeRoot);
 	const existingWorktrees = repo.worktrees.filter(
-		(worktree) => !worktree.isCurrent && !worktree.isMainCheckout && isSubpathOf(worktree.path, resolvedWorktreeRoot),
+		(worktree) => !worktree.isMainCheckout && isSubpathOf(worktree.path, resolvedWorktreeRoot),
 	);
 	const items: WorkspacePickerItem[] = [
 		{
@@ -164,6 +175,12 @@ export async function createWorktreeFlow(
 		return undefined;
 	}
 
+	const createMode = await chooseCreateWorktreeMode(pi, ctx, repo, baseBranch.name);
+	if (!createMode) {
+		ctx.ui.notify("Cancelled", "info");
+		return undefined;
+	}
+
 	const newBranchName = await promptForNewBranchName(ctx, repo, baseBranch.name, template?.prefix);
 	if (!newBranchName) {
 		return undefined;
@@ -171,6 +188,9 @@ export async function createWorktreeFlow(
 
 	const targetPath = defaultWorktreePath(repo.mainCheckoutPath, worktreeRoot, newBranchName);
 	const confirmationLines = [`Base branch: ${baseBranch.name}`, `New branch: ${newBranchName}`, `Path: ${targetPath}`];
+	if (createMode.mode === "move-current-changes") {
+		confirmationLines.push(`Local changes: move ${createMode.changeCount} change(s) into the new worktree`);
+	}
 	if (template) {
 		confirmationLines.unshift(`Template: ${template.name}`);
 	}
@@ -189,29 +209,94 @@ export async function createWorktreeFlow(
 		throw new Error(`Failed to create ${dirname(targetPath)}: ${toErrorMessage(error)}`);
 	}
 
-	const created = await exec(
-		pi,
-		"git",
-		["worktree", "add", "-b", newBranchName, targetPath, baseBranch.name],
-		repo.mainCheckoutPath,
-	);
-	if (created.code !== 0) {
-		throw new Error(created.stderr.trim() || `Failed to create worktree ${targetPath}`);
-	}
-
-	await writeGitConfig(pi, targetPath, `branch.${newBranchName}.wt-parent`, baseBranch.name);
-
-	if (setupStep) {
-		ctx.ui.setStatus("pi-wt", `Running setup in ${newBranchName}...`);
-		try {
-			const setup = await execShell(pi, setupStep.command, targetPath);
-			if (setup.code !== 0) {
-				throw new Error(setup.stderr.trim() || setup.stdout.trim() || `Setup failed in ${targetPath}`);
+	let stashedChanges: StashedWorktreeChanges | null = null;
+	let restoreStashToSource = false;
+	try {
+		if (createMode.mode === "move-current-changes") {
+			ctx.ui.setStatus("pi-wt", `Stashing ${createMode.changeCount} local change(s)...`);
+			try {
+				stashedChanges = await stashCurrentChangesForNewWorktree(pi, repo.cwd, createMode.changeCount);
+				restoreStashToSource = true;
+			} finally {
+				ctx.ui.setStatus("pi-wt", undefined);
 			}
-			ctx.ui.notify(`Setup finished: ${setupStep.label}`, "info");
-		} finally {
-			ctx.ui.setStatus("pi-wt", undefined);
 		}
+
+		const created = await exec(
+			pi,
+			"git",
+			["worktree", "add", "-b", newBranchName, targetPath, baseBranch.name],
+			repo.mainCheckoutPath,
+		);
+		if (created.code !== 0) {
+			throw new Error(created.stderr.trim() || `Failed to create worktree ${targetPath}`);
+		}
+
+		await writeGitConfig(pi, targetPath, `branch.${newBranchName}.wt-parent`, baseBranch.name);
+
+		if (stashedChanges) {
+			ctx.ui.setStatus("pi-wt", `Applying moved changes in ${newBranchName}...`);
+			try {
+				const applied = await exec(pi, "git", ["stash", "apply", "--index", stashedChanges.oid], targetPath);
+				if (applied.code !== 0) {
+					restoreStashToSource = false;
+					throw new Error(
+						(applied.stderr.trim() || applied.stdout.trim() || `Failed to apply moved changes in ${targetPath}`) +
+							"\n\nThe new worktree was created. The stash entry was kept so you can apply or inspect it manually.",
+					);
+				}
+			} finally {
+				ctx.ui.setStatus("pi-wt", undefined);
+			}
+
+			restoreStashToSource = false;
+			const dropped = await dropStashByOid(pi, repo.mainCheckoutPath, stashedChanges.oid);
+			if (!dropped) {
+				ctx.ui.notify(
+					`Moved ${stashedChanges.changeCount} local change(s) into ${newBranchName}, but left the stash entry behind.`,
+					"warning",
+				);
+			}
+		}
+
+		if (setupStep) {
+			ctx.ui.setStatus("pi-wt", `Running setup in ${newBranchName}...`);
+			try {
+				const setup = await execShell(pi, setupStep.command, targetPath);
+				if (setup.code !== 0) {
+					throw new Error(setup.stderr.trim() || setup.stdout.trim() || `Setup failed in ${targetPath}`);
+				}
+				ctx.ui.notify(`Setup finished: ${setupStep.label}`, "info");
+			} finally {
+				ctx.ui.setStatus("pi-wt", undefined);
+			}
+		}
+	} catch (error) {
+		if (stashedChanges && restoreStashToSource) {
+			ctx.ui.setStatus("pi-wt", "Restoring moved changes...");
+			try {
+				const restored = await exec(pi, "git", ["stash", "apply", "--index", stashedChanges.oid], repo.cwd);
+				if (restored.code === 0) {
+					const dropped = await dropStashByOid(pi, repo.mainCheckoutPath, stashedChanges.oid);
+					if (!dropped) {
+						ctx.ui.notify("Restored local changes, but left the stash entry behind.", "warning");
+					}
+				} else {
+					throw new Error(
+						restored.stderr.trim() ||
+							restored.stdout.trim() ||
+							"Failed to restore stashed changes in the original worktree",
+					);
+				}
+			} catch (restoreError) {
+				throw new Error(
+					`${toErrorMessage(error)}\n\nAlso failed to restore the stashed changes in ${repo.cwd}: ${toErrorMessage(restoreError)}`,
+				);
+			} finally {
+				ctx.ui.setStatus("pi-wt", undefined);
+			}
+		}
+		throw error;
 	}
 
 	return {
@@ -219,30 +304,6 @@ export async function createWorktreeFlow(
 		branch: newBranchName,
 		kind: "worktree",
 	};
-}
-
-export async function archiveWorktreeFlow(
-	pi: ExtensionAPI,
-	ctx: ExtensionCommandContext,
-	repo: RepoState,
-	worktreeRoot: string,
-): Promise<boolean> {
-	const resolvedWorktreeRoot = resolveWorktreeRoot(repo.mainCheckoutPath, worktreeRoot);
-	const candidates = await listArchiveCandidates(pi, repo, resolvedWorktreeRoot);
-	if (candidates.length === 0) {
-		ctx.ui.notify(`No linked worktrees under ${resolvedWorktreeRoot} can be archived.`, "info");
-		return false;
-	}
-
-	const labels = candidates.map((candidate) => formatArchiveCandidateOption(candidate));
-	const byLabel = new Map(labels.map((label, index) => [label, candidates[index]]));
-	const selected = await ctx.ui.select(`Archive a worktree under ${resolvedWorktreeRoot}`, labels);
-	if (!selected) {
-		return false;
-	}
-
-	const candidate = byLabel.get(selected);
-	return candidate ? archiveWorktreeCandidateFlow(pi, ctx, repo, candidate) : false;
 }
 
 export async function archiveWorktreeAtPathFlow(
@@ -272,22 +333,73 @@ async function archiveWorktreeCandidateFlow(
 		ctx.ui.notify(
 			[
 				`Refusing to archive ${workspaceBranchLabel(candidate.worktree)} because it has local changes (${candidate.changes.length}).`,
-				`Clean ${candidate.worktree.path} first, then try /wt archive again.`,
+				`Clean ${candidate.worktree.path} first, then try /wt again.`,
 			].join("\n"),
 			"warning",
 		);
 		return false;
 	}
 
+	const switchPlan = candidate.worktree.isCurrent ? resolveArchiveSwitchPlan(repo, candidate) : null;
+	if (candidate.worktree.isCurrent && !switchPlan) {
+		ctx.ui.notify(
+			candidate.mergeTarget
+				? `Could not switch away to the base branch ${candidate.mergeTarget} before archiving ${candidate.worktree.path}.`
+				: `Could not determine a base branch for ${candidate.worktree.path}.`,
+			"error",
+		);
+		return false;
+	}
+	if (switchPlan?.requiresCheckout) {
+		const destinationChanges = await readWorktreeChanges(pi, switchPlan.workspace.cwd, true);
+		if (destinationChanges.length > 0) {
+			ctx.ui.notify(
+				[
+					`Refusing to check out the base branch ${switchPlan.baseBranch} in ${switchPlan.workspace.cwd} because it has local changes (${destinationChanges.length}).`,
+					`Clean ${switchPlan.workspace.cwd} first, then try /wt again.`,
+				].join("\n"),
+				"warning",
+			);
+			return false;
+		}
+	}
+
 	const confirmationLines = [
 		`Branch: ${candidate.worktree.branch ?? "(detached HEAD)"}`,
 		`Path: ${candidate.worktree.path}`,
 		`Delete local branch: ${describeArchiveBranchAction(candidate)}`,
+		...(switchPlan ? [`Base branch: ${switchPlan.baseBranch}`] : []),
 		"This removes the linked worktree directory.",
 	];
 	const confirmed = await ctx.ui.confirm("Archive worktree", confirmationLines.join("\n"));
 	if (!confirmed) {
 		return false;
+	}
+
+	if (switchPlan) {
+		ctx.ui.setStatus("pi-wt", "Switching away before archiving...");
+		const switched = await switchToLatestOrCreateSession(ctx, switchPlan.workspace);
+		if (switched.cancelled) {
+			ctx.ui.setStatus("pi-wt", undefined);
+			return false;
+		}
+		if (switchPlan.requiresCheckout) {
+			ctx.ui.setStatus("pi-wt", `Checking out base branch ${switchPlan.baseBranch}...`);
+			const checkedOut = await exec(pi, "git", ["checkout", switchPlan.baseBranch], switchPlan.workspace.cwd);
+			if (checkedOut.code !== 0) {
+				ctx.ui.notify(
+					[
+						`Switched away, but could not check out base branch ${switchPlan.baseBranch}.`,
+						checkedOut.stderr.trim() ||
+							checkedOut.stdout.trim() ||
+							`git checkout ${switchPlan.baseBranch} failed`,
+					].join("\n"),
+					"error",
+				);
+				ctx.ui.setStatus("pi-wt", undefined);
+				return false;
+			}
+		}
 	}
 
 	ctx.ui.setStatus("pi-wt", `Archiving ${workspaceBranchLabel(candidate.worktree)}...`);
@@ -398,6 +510,80 @@ async function promptForExistingBaseBranch(
 	}
 }
 
+async function chooseCreateWorktreeMode(
+	pi: ExtensionAPI,
+	ctx: ExtensionCommandContext,
+	repo: RepoState,
+	baseBranchName: string,
+): Promise<CreateWorktreeModeSelection | undefined> {
+	if (!repo.currentBranch || normalizeBranchName(repo.currentBranch) !== normalizeBranchName(baseBranchName)) {
+		return { mode: "clean", changeCount: 0 };
+	}
+
+	const currentChanges = await readWorktreeChanges(pi, repo.cwd, true);
+	if (currentChanges.length === 0) {
+		return { mode: "clean", changeCount: 0 };
+	}
+
+	const cleanLabel = `Create clean worktree\n  leave ${currentChanges.length} local change(s) in ${repo.currentBranch}`;
+	const moveLabel = `Move current changes into new worktree\n  stash and re-apply ${currentChanges.length} local change(s), including untracked files`;
+	const selected = await ctx.ui.select(`Create from ${baseBranchName}`, [cleanLabel, moveLabel]);
+	if (!selected) {
+		return undefined;
+	}
+
+	return {
+		mode: selected === moveLabel ? "move-current-changes" : "clean",
+		changeCount: currentChanges.length,
+	};
+}
+
+async function stashCurrentChangesForNewWorktree(
+	pi: ExtensionAPI,
+	cwd: string,
+	changeCount: number,
+): Promise<StashedWorktreeChanges> {
+	const before = await readStashHeadOid(pi, cwd);
+	const message = `pi-wt move current changes ${Date.now()}`;
+	const stashed = await exec(pi, "git", ["stash", "push", "-u", "-m", message], cwd);
+	if (stashed.code !== 0) {
+		throw new Error(stashed.stderr.trim() || stashed.stdout.trim() || "Failed to stash local changes");
+	}
+
+	const after = await readStashHeadOid(pi, cwd);
+	if (!after || after === before) {
+		throw new Error("Stashed local changes, but could not resolve the created stash entry");
+	}
+
+	return { oid: after, changeCount };
+}
+
+async function readStashHeadOid(pi: ExtensionAPI, cwd: string): Promise<string | null> {
+	const result = await exec(pi, "git", ["rev-parse", "--verify", "--quiet", "refs/stash"], cwd);
+	const value = result.stdout.trim();
+	return result.code === 0 && value ? value : null;
+}
+
+async function dropStashByOid(pi: ExtensionAPI, cwd: string, oid: string): Promise<boolean> {
+	const stashList = await exec(pi, "git", ["stash", "list", "--format=%gd%x09%H"], cwd);
+	if (stashList.code !== 0) {
+		return false;
+	}
+
+	const stashRef = stashList.stdout
+		.split(/\r?\n/)
+		.map((line) => line.trim())
+		.filter(Boolean)
+		.map((line) => line.split("\t"))
+		.find(([, entryOid]) => entryOid === oid)?.[0];
+	if (!stashRef) {
+		return false;
+	}
+
+	const dropped = await exec(pi, "git", ["stash", "drop", stashRef], cwd);
+	return dropped.code === 0;
+}
+
 async function promptForNewBranchName(
 	ctx: ExtensionCommandContext,
 	repo: RepoState,
@@ -435,6 +621,7 @@ export function readProjectWorktreeSettings(repo: RepoState): WorktreeProjectSet
 			branchPickerLimit: DEFAULT_BASE_BRANCH_PICKER_LIMIT,
 			editorCommand: null,
 			terminalCommand: null,
+			newWorktreeTabCommand: null,
 		};
 	}
 
@@ -446,6 +633,7 @@ export function readProjectWorktreeSettings(repo: RepoState): WorktreeProjectSet
 				branchPickerLimit?: unknown;
 				editorCommand?: unknown;
 				terminalCommand?: unknown;
+				newWorktreeTabCommand?: unknown;
 			};
 		};
 		const wtSettings = parsed?.wt;
@@ -473,13 +661,18 @@ export function readProjectWorktreeSettings(repo: RepoState): WorktreeProjectSet
 			typeof wtSettings?.terminalCommand === "string" && wtSettings.terminalCommand.trim().length > 0
 				? wtSettings.terminalCommand.trim()
 				: null;
-		return { templates, branchPickerLimit, editorCommand, terminalCommand };
+		const newWorktreeTabCommand =
+			typeof wtSettings?.newWorktreeTabCommand === "string" && wtSettings.newWorktreeTabCommand.trim().length > 0
+				? wtSettings.newWorktreeTabCommand.trim()
+				: null;
+		return { templates, branchPickerLimit, editorCommand, terminalCommand, newWorktreeTabCommand };
 	} catch {
 		return {
 			templates: [],
 			branchPickerLimit: DEFAULT_BASE_BRANCH_PICKER_LIMIT,
 			editorCommand: null,
 			terminalCommand: null,
+			newWorktreeTabCommand: null,
 		};
 	}
 }
@@ -500,13 +693,55 @@ export function workspaceSummary(workspace: WorkspaceTarget): string {
 	return `${prefix} · ${branch}`;
 }
 
+function resolveArchiveSwitchPlan(
+	repo: RepoState,
+	candidate: ArchiveCandidate,
+): { workspace: WorkspaceTarget; baseBranch: string; requiresCheckout: boolean } | null {
+	const baseBranch = candidate.mergeTarget;
+	if (!baseBranch) {
+		return null;
+	}
+
+	const normalizedBaseBranch = normalizeBranchName(baseBranch);
+	const matchingCheckout = repo.worktrees.find(
+		(worktree) =>
+			!worktree.isCurrent && worktree.branch && normalizeBranchName(worktree.branch) === normalizedBaseBranch,
+	);
+	if (matchingCheckout) {
+		return {
+			workspace: {
+				cwd: matchingCheckout.path,
+				branch: matchingCheckout.branch,
+				kind: matchingCheckout.isMainCheckout ? "main" : "worktree",
+			},
+			baseBranch: normalizedBaseBranch,
+			requiresCheckout: false,
+		};
+	}
+
+	const primaryCheckout = repo.worktrees.find((worktree) => worktree.isMainCheckout && !worktree.isCurrent);
+	if (!primaryCheckout) {
+		return null;
+	}
+
+	return {
+		workspace: {
+			cwd: primaryCheckout.path,
+			branch: primaryCheckout.branch,
+			kind: "main",
+		},
+		baseBranch: normalizedBaseBranch,
+		requiresCheckout: normalizeBranchName(primaryCheckout.branch ?? "") !== normalizedBaseBranch,
+	};
+}
+
 async function listArchiveCandidates(
 	pi: ExtensionAPI,
 	repo: RepoState,
 	resolvedWorktreeRoot: string,
 ): Promise<ArchiveCandidate[]> {
 	const worktrees = repo.worktrees.filter(
-		(worktree) => !worktree.isCurrent && !worktree.isMainCheckout && isSubpathOf(worktree.path, resolvedWorktreeRoot),
+		(worktree) => !worktree.isMainCheckout && isSubpathOf(worktree.path, resolvedWorktreeRoot),
 	);
 
 	return Promise.all(
@@ -535,6 +770,7 @@ async function listArchiveCandidates(
 
 function formatWorkspaceDescription(worktree: WorktreeInfo, worktreeRoot?: string): string {
 	const flags = [
+		worktree.isCurrent ? "current" : "",
 		worktree.detached ? "detached" : "",
 		worktree.locked ? "locked" : "",
 		worktree.prunable ? "prunable" : "",
@@ -544,20 +780,6 @@ function formatWorkspaceDescription(worktree: WorktreeInfo, worktreeRoot?: strin
 			? relative(worktreeRoot, worktree.path) || basename(worktree.path)
 			: worktree.path;
 	return [pathLabel, flags.length > 0 ? `[${flags.join(", ")}]` : ""].filter(Boolean).join(" · ");
-}
-
-function formatArchiveCandidateOption(candidate: ArchiveCandidate): string {
-	const flags = [
-		candidate.changes.length > 0 ? `dirty (${candidate.changes.length})` : "clean",
-		candidate.mergeState === "merged" && candidate.mergeTarget
-			? `merged into ${candidate.mergeTarget}`
-			: candidate.mergeState === "not-merged" && candidate.mergeTarget
-				? `not merged into ${candidate.mergeTarget}`
-				: candidate.mergeTarget
-					? `merge target ${candidate.mergeTarget}`
-					: "merge target unknown",
-	].join(" · ");
-	return `${workspaceBranchLabel(candidate.worktree)}\n  ${flags} · ${candidate.pathLabel}`;
 }
 
 function describeArchiveBranchAction(candidate: ArchiveCandidate): string {
