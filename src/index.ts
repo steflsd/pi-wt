@@ -53,7 +53,35 @@ interface WorkspaceMenuChoice {
 	workspace?: WorkspaceTarget;
 }
 
+interface SetupStep {
+	label: string;
+	command: string;
+}
+
+interface BaseBranchSelection {
+	name: string;
+	ref: string;
+	source: string;
+}
+
+interface PullRequestInfo {
+	number: number;
+	title: string;
+	url: string;
+	state: string;
+	isDraft: boolean;
+	baseRefName: string;
+	headRefName: string;
+}
+
 type SessionSelectionMode = "auto" | "pick" | "new";
+
+type WtCommand =
+	| { kind: "workspace"; sessionMode: SessionSelectionMode }
+	| { kind: "status" }
+	| { kind: "rebase"; explicitBase?: string }
+	| { kind: "pr"; explicitBase?: string }
+	| { kind: "help" };
 
 const WORKTREE_ROOT_FLAG = "wt-root";
 const WT_SETUP_FLAG = "wt-setup";
@@ -74,74 +102,31 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.registerCommand("wt", {
-		description: "Create or switch worktrees and continue the most recent session there by default",
+		description: "Worktree helpers: switch/create worktrees, show status, rebase, and manage PRs",
+		getArgumentCompletions: (prefix) => getWtArgumentCompletions(prefix),
 		handler: async (args, ctx) => {
 			try {
 				if (!ctx.hasUI) {
 					throw new Error("/wt requires a UI-capable mode");
 				}
-				const sessionMode = parseSessionSelectionMode(args);
-				const repo = await inspectRepo(pi, ctx.cwd);
-				if (!repo) {
-					ctx.ui.notify("/wt must be run inside a git repository", "error");
-					return;
-				}
 
-				const menuChoice = await chooseWorkspaceTarget(ctx, repo, getConfiguredWorktreeRoot(pi));
-				if (!menuChoice) {
-					ctx.ui.notify("Cancelled", "info");
-					return;
-				}
-
-				const workspace =
-					menuChoice.type === "workspace"
-						? menuChoice.workspace
-						: await createWorktreeFlow(
-								pi,
-								ctx,
-								repo,
-								getConfiguredWorktreeRoot(pi),
-								getConfiguredSetupStep(pi, repo),
-							);
-				if (!workspace) {
-					return;
-				}
-
-				const sessions = await listSessions(workspace.cwd);
-				if (sessionMode === "pick" && sessions.length > 0) {
-					const selected = await chooseSession(ctx, workspace, sessions);
-					if (!selected) {
-						ctx.ui.notify("Cancelled", "info");
+				const command = parseWtCommand(args);
+				switch (command.kind) {
+					case "workspace":
+						await handleWorkspaceCommand(pi, ctx, command.sessionMode);
 						return;
-					}
-					await ctx.waitForIdle();
-					const result = await ctx.switchSession(selected.path);
-					if (!result.cancelled) {
-						ctx.ui.notify(`Switched to ${workspaceSummary(workspace)} · ${describeSession(selected)}`, "info");
-					}
-					return;
-				}
-
-				if (sessionMode !== "new" && sessions.length > 0) {
-					await ctx.waitForIdle();
-					const result = await ctx.switchSession(sessions[0].path);
-					if (!result.cancelled) {
-						ctx.ui.notify(`Switched to ${workspaceSummary(workspace)} · ${describeSession(sessions[0])}`, "info");
-					}
-					return;
-				}
-
-				await ctx.waitForIdle();
-				const sessionManager = SessionManager.create(workspace.cwd);
-				const sessionFile = sessionManager.getSessionFile();
-				if (!sessionFile) {
-					ctx.ui.notify("Failed to prepare session file", "error");
-					return;
-				}
-				await persistNewSessionHeader(sessionManager, sessionFile);
-				const result = await ctx.switchSession(sessionFile);
-				if (!result.cancelled) {
-					ctx.ui.notify(`Created new session in ${workspaceSummary(workspace)}`, "info");
+					case "status":
+						await handleStatusCommand(pi, ctx);
+						return;
+					case "rebase":
+						await handleRebaseCommand(pi, ctx, command.explicitBase);
+						return;
+					case "pr":
+						await handlePrCommand(pi, ctx, command.explicitBase);
+						return;
+					case "help":
+						ctx.ui.notify(wtUsageText(), "info");
+						return;
 				}
 			} catch (error) {
 				const message = toErrorMessage(error);
@@ -155,6 +140,305 @@ export default function (pi: ExtensionAPI) {
 	});
 }
 
+function getWtArgumentCompletions(prefix: string) {
+	const trimmed = prefix.trimStart();
+	if (trimmed.includes(" ")) return null;
+
+	const items = [
+		{ value: "pick", label: "pick a session in the selected workspace" },
+		{ value: "new", label: "create a fresh session in the selected workspace" },
+		{ value: "status", label: "show current worktree, branch, base branch, and PR info" },
+		{ value: "rebase", label: "rebase the current branch onto its detected parent/base branch" },
+		{ value: "pr", label: "view or create a PR for the current branch" },
+		{ value: "help", label: "show /wt usage" },
+	];
+
+	const filtered = items.filter((item) => item.value.startsWith(trimmed));
+	return filtered.length > 0 ? filtered : null;
+}
+
+function parseWtCommand(args: string): WtCommand {
+	const trimmed = args.trim();
+	if (!trimmed) return { kind: "workspace", sessionMode: "auto" };
+
+	const [subcommand, ...rest] = trimmed.split(/\s+/);
+	const normalized = subcommand.toLowerCase();
+	const trailing = rest.join(" ").trim();
+
+	if (["pick", "session", "sessions", "choose"].includes(normalized)) {
+		if (trailing) throw new Error("Usage: /wt pick");
+		return { kind: "workspace", sessionMode: "pick" };
+	}
+
+	if (["new", "fresh"].includes(normalized)) {
+		if (trailing) throw new Error("Usage: /wt new");
+		return { kind: "workspace", sessionMode: "new" };
+	}
+
+	if (normalized === "status") {
+		if (trailing) throw new Error("Usage: /wt status");
+		return { kind: "status" };
+	}
+
+	if (normalized === "rebase") {
+		return { kind: "rebase", explicitBase: trailing || undefined };
+	}
+
+	if (normalized === "pr") {
+		return { kind: "pr", explicitBase: trailing || undefined };
+	}
+
+	if (normalized === "help") {
+		return { kind: "help" };
+	}
+
+	throw new Error(wtUsageText());
+}
+
+function wtUsageText(): string {
+	return [
+		"Usage:",
+		"/wt               Open the worktree picker/create flow",
+		"/wt pick          Pick a session in the selected workspace",
+		"/wt new           Create a fresh session in the selected workspace",
+		"/wt status        Show current branch, base branch, and PR info",
+		"/wt rebase [base] Rebase current branch onto detected or explicit base branch",
+		"/wt pr [base]     View current PR, or create one against detected or explicit base branch",
+	].join("\n");
+}
+
+async function handleWorkspaceCommand(
+	pi: ExtensionAPI,
+	ctx: ExtensionCommandContext,
+	sessionMode: SessionSelectionMode,
+): Promise<void> {
+	const repo = await inspectRepo(pi, ctx.cwd);
+	if (!repo) {
+		ctx.ui.notify("/wt must be run inside a git repository", "error");
+		return;
+	}
+
+	const menuChoice = await chooseWorkspaceTarget(ctx, repo, getConfiguredWorktreeRoot(pi));
+	if (!menuChoice) {
+		ctx.ui.notify("Cancelled", "info");
+		return;
+	}
+
+	const workspace =
+		menuChoice.type === "workspace"
+			? menuChoice.workspace
+			: await createWorktreeFlow(pi, ctx, repo, getConfiguredWorktreeRoot(pi), getConfiguredSetupStep(pi, repo));
+	if (!workspace) {
+		return;
+	}
+
+	const sessions = await listSessions(workspace.cwd);
+	if (sessionMode === "pick" && sessions.length > 0) {
+		const selected = await chooseSession(ctx, workspace, sessions);
+		if (!selected) {
+			ctx.ui.notify("Cancelled", "info");
+			return;
+		}
+		await ctx.waitForIdle();
+		const result = await ctx.switchSession(selected.path);
+		if (!result.cancelled) {
+			ctx.ui.notify(`Switched to ${workspaceSummary(workspace)} · ${describeSession(selected)}`, "info");
+		}
+		return;
+	}
+
+	if (sessionMode !== "new" && sessions.length > 0) {
+		await ctx.waitForIdle();
+		const result = await ctx.switchSession(sessions[0].path);
+		if (!result.cancelled) {
+			ctx.ui.notify(`Switched to ${workspaceSummary(workspace)} · ${describeSession(sessions[0])}`, "info");
+		}
+		return;
+	}
+
+	await ctx.waitForIdle();
+	const sessionManager = SessionManager.create(workspace.cwd);
+	const sessionFile = sessionManager.getSessionFile();
+	if (!sessionFile) {
+		ctx.ui.notify("Failed to prepare session file", "error");
+		return;
+	}
+	await persistNewSessionHeader(sessionManager, sessionFile);
+	const result = await ctx.switchSession(sessionFile);
+	if (!result.cancelled) {
+		ctx.ui.notify(`Created new session in ${workspaceSummary(workspace)}`, "info");
+	}
+}
+
+async function handleStatusCommand(pi: ExtensionAPI, ctx: ExtensionCommandContext): Promise<void> {
+	const repo = await inspectRepo(pi, ctx.cwd);
+	if (!repo) {
+		ctx.ui.notify("/wt must be run inside a git repository", "error");
+		return;
+	}
+
+	const currentWorktree = repo.worktrees.find((worktree) => worktree.isCurrent);
+	const pr = await readCurrentPr(pi, repo.cwd);
+	const baseBranch = repo.currentBranch ? await detectBaseBranch(pi, repo, repo.cwd, repo.currentBranch) : null;
+
+	const lines = [
+		`Repo root: ${repo.repoRoot}`,
+		`Main checkout: ${repo.mainCheckoutPath}`,
+		`Current cwd: ${repo.cwd}`,
+		`Workspace: ${describeCurrentWorkspace(currentWorktree)}`,
+		`Branch: ${repo.currentBranch ?? "(detached HEAD)"}`,
+		`Default branch: ${repo.defaultBranch ?? "(unknown)"}`,
+		`Detected base: ${baseBranch ? `${baseBranch.name} (${baseBranch.source})` : "(none)"}`,
+		pr ? `PR: #${pr.number} ${pr.title} [${formatPrState(pr)}]\n  ${pr.url}` : "PR: (none)",
+	];
+
+	ctx.ui.notify(lines.join("\n"), "info");
+}
+
+async function handleRebaseCommand(
+	pi: ExtensionAPI,
+	ctx: ExtensionCommandContext,
+	explicitBase?: string,
+): Promise<void> {
+	const repo = await inspectRepo(pi, ctx.cwd);
+	if (!repo) {
+		ctx.ui.notify("/wt must be run inside a git repository", "error");
+		return;
+	}
+	if (!repo.currentBranch) {
+		ctx.ui.notify("Cannot rebase from detached HEAD", "error");
+		return;
+	}
+
+	const baseBranch = await detectBaseBranch(pi, repo, repo.cwd, repo.currentBranch, explicitBase);
+	if (!baseBranch) {
+		ctx.ui.notify("Could not determine a base branch. Try /wt rebase <branch>", "error");
+		return;
+	}
+	if (normalizeBranchName(baseBranch.name) === normalizeBranchName(repo.currentBranch)) {
+		ctx.ui.notify(`Refusing to rebase ${repo.currentBranch} onto itself`, "error");
+		return;
+	}
+
+	const confirmed = await ctx.ui.confirm(
+		"Rebase current branch",
+		[
+			`Current branch: ${repo.currentBranch}`,
+			`Base branch: ${baseBranch.name}`,
+			`Git ref: ${baseBranch.ref}`,
+			`Source: ${baseBranch.source}`,
+		].join("\n"),
+	);
+	if (!confirmed) {
+		ctx.ui.notify("Cancelled", "info");
+		return;
+	}
+
+	await ctx.waitForIdle();
+	ctx.ui.setStatus("pi-wt", `Rebasing ${repo.currentBranch} onto ${baseBranch.ref}...`);
+	try {
+		const result = await exec(pi, "git", ["rebase", baseBranch.ref], repo.cwd);
+		if (result.code === 0) {
+			const output = summarizeCommandOutput(result);
+			ctx.ui.notify(
+				[`Rebased ${repo.currentBranch} onto ${baseBranch.name}.`, output ? `\n${output}` : ""]
+					.filter(Boolean)
+					.join("\n"),
+				"info",
+			);
+			return;
+		}
+
+		ctx.ui.notify(
+			[
+				`git rebase ${baseBranch.ref} failed.`,
+				summarizeCommandOutput(result) ||
+					"Resolve conflicts, then run git rebase --continue or git rebase --abort.",
+			].join("\n\n"),
+			"error",
+		);
+	} finally {
+		ctx.ui.setStatus("pi-wt", undefined);
+	}
+}
+
+async function handlePrCommand(pi: ExtensionAPI, ctx: ExtensionCommandContext, explicitBase?: string): Promise<void> {
+	const repo = await inspectRepo(pi, ctx.cwd);
+	if (!repo) {
+		ctx.ui.notify("/wt must be run inside a git repository", "error");
+		return;
+	}
+	if (!repo.currentBranch) {
+		ctx.ui.notify("Cannot manage a PR from detached HEAD", "error");
+		return;
+	}
+
+	if (!(await hasGhCli(pi, repo.cwd))) {
+		ctx.ui.notify("gh CLI is required for /wt pr", "error");
+		return;
+	}
+
+	const existingPr = await readCurrentPr(pi, repo.cwd);
+	if (existingPr) {
+		ctx.ui.notify(
+			[
+				`PR #${existingPr.number}: ${existingPr.title}`,
+				`State: ${formatPrState(existingPr)}`,
+				`Base: ${existingPr.baseRefName}`,
+				`Head: ${existingPr.headRefName}`,
+				existingPr.url,
+			].join("\n"),
+			"info",
+		);
+		return;
+	}
+
+	const baseBranch = await detectBaseBranch(pi, repo, repo.cwd, repo.currentBranch, explicitBase);
+	if (!baseBranch) {
+		ctx.ui.notify("Could not determine a base branch. Try /wt pr <branch>", "error");
+		return;
+	}
+
+	const confirmed = await ctx.ui.confirm(
+		"Create PR",
+		[
+			`Head branch: ${repo.currentBranch}`,
+			`Base branch: ${baseBranch.name}`,
+			`Source: ${baseBranch.source}`,
+			"Command: gh pr create --fill --base <base>",
+		].join("\n"),
+	);
+	if (!confirmed) {
+		ctx.ui.notify("Cancelled", "info");
+		return;
+	}
+
+	await ctx.waitForIdle();
+	ctx.ui.setStatus("pi-wt", `Creating PR for ${repo.currentBranch}...`);
+	try {
+		const result = await exec(pi, "gh", ["pr", "create", "--fill", "--base", baseBranch.name], repo.cwd);
+		if (result.code === 0) {
+			ctx.ui.notify(
+				[`Created PR for ${repo.currentBranch} against ${baseBranch.name}.`, summarizeCommandOutput(result)]
+					.filter(Boolean)
+					.join("\n\n"),
+				"info",
+			);
+			return;
+		}
+
+		ctx.ui.notify(
+			[
+				`gh pr create failed for ${repo.currentBranch}.`,
+				summarizeCommandOutput(result) || "Check gh auth and repository settings.",
+			].join("\n\n"),
+			"error",
+		);
+	} finally {
+		ctx.ui.setStatus("pi-wt", undefined);
+	}
+}
+
 async function persistNewSessionHeader(sessionManager: SessionManager, sessionFile: string): Promise<void> {
 	const header = sessionManager.getHeader();
 	if (!header) {
@@ -163,22 +447,9 @@ async function persistNewSessionHeader(sessionManager: SessionManager, sessionFi
 	await writeFile(sessionFile, `${JSON.stringify(header)}\n`, "utf8");
 }
 
-function parseSessionSelectionMode(args: string): SessionSelectionMode {
-	const normalized = args.trim().toLowerCase();
-	if (!normalized) return "auto";
-	if (["pick", "session", "sessions", "choose"].includes(normalized)) return "pick";
-	if (["new", "fresh"].includes(normalized)) return "new";
-	throw new Error("Usage: /wt [pick|new]");
-}
-
 function getConfiguredWorktreeRoot(pi: ExtensionAPI): string {
 	const configured = pi.getFlag(WORKTREE_ROOT_FLAG);
 	return typeof configured === "string" && configured.trim().length > 0 ? configured.trim() : DEFAULT_WORKTREE_ROOT;
-}
-
-interface SetupStep {
-	label: string;
-	command: string;
 }
 
 function getConfiguredSetupStep(pi: ExtensionAPI, repo: RepoState): SetupStep | null {
@@ -464,6 +735,127 @@ async function chooseSession(
 	const byLabel = new Map(labels.map((label, index) => [label, sessions[index]]));
 	const selected = await ctx.ui.select(`Pick session for ${workspaceSummary(workspace)}`, labels);
 	return selected ? byLabel.get(selected) : undefined;
+}
+
+async function detectBaseBranch(
+	pi: ExtensionAPI,
+	repo: RepoState,
+	cwd: string,
+	currentBranch: string,
+	explicitBase?: string,
+): Promise<BaseBranchSelection | null> {
+	if (explicitBase?.trim()) {
+		return resolveBaseBranchSelection(pi, cwd, explicitBase.trim(), "explicit argument");
+	}
+
+	const pr = await readCurrentPr(pi, cwd);
+	if (pr?.baseRefName) {
+		return resolveBaseBranchSelection(pi, cwd, pr.baseRefName, "current PR base");
+	}
+
+	const storedParent = await readGitConfig(pi, cwd, `branch.${currentBranch}.wt-parent`);
+	if (storedParent) {
+		return resolveBaseBranchSelection(pi, cwd, storedParent, `git config branch.${currentBranch}.wt-parent`);
+	}
+
+	const ghMergeBase = await readGitConfig(pi, cwd, `branch.${currentBranch}.gh-merge-base`);
+	if (ghMergeBase) {
+		return resolveBaseBranchSelection(pi, cwd, ghMergeBase, `git config branch.${currentBranch}.gh-merge-base`);
+	}
+
+	if (repo.defaultBranch) {
+		return resolveBaseBranchSelection(pi, cwd, repo.defaultBranch, "default branch");
+	}
+
+	return null;
+}
+
+async function resolveBaseBranchSelection(
+	pi: ExtensionAPI,
+	cwd: string,
+	branchish: string,
+	source: string,
+): Promise<BaseBranchSelection> {
+	const normalizedName = normalizeBranchName(branchish);
+	const directRef = await verifyRef(pi, cwd, branchish);
+	if (directRef) {
+		return { name: normalizedName, ref: branchish, source };
+	}
+
+	if (await refExists(pi, cwd, `refs/heads/${normalizedName}`)) {
+		return { name: normalizedName, ref: normalizedName, source };
+	}
+
+	if (await refExists(pi, cwd, `refs/remotes/origin/${normalizedName}`)) {
+		return { name: normalizedName, ref: `origin/${normalizedName}`, source };
+	}
+
+	return { name: normalizedName, ref: normalizedName, source };
+}
+
+async function hasGhCli(pi: ExtensionAPI, cwd: string): Promise<boolean> {
+	const result = await exec(pi, "gh", ["--version"], cwd);
+	return result.code === 0;
+}
+
+async function readCurrentPr(pi: ExtensionAPI, cwd: string): Promise<PullRequestInfo | null> {
+	if (!(await hasGhCli(pi, cwd))) {
+		return null;
+	}
+
+	const result = await exec(
+		pi,
+		"gh",
+		["pr", "view", "--json", "number,title,url,state,isDraft,baseRefName,headRefName"],
+		cwd,
+	);
+	if (result.code !== 0) {
+		return null;
+	}
+
+	try {
+		const parsed = JSON.parse(result.stdout) as PullRequestInfo;
+		return parsed?.url ? parsed : null;
+	} catch {
+		return null;
+	}
+}
+
+async function readGitConfig(pi: ExtensionAPI, cwd: string, key: string): Promise<string | null> {
+	const result = await exec(pi, "git", ["config", "--get", key], cwd);
+	const value = result.stdout.trim();
+	return result.code === 0 && value ? value : null;
+}
+
+async function verifyRef(pi: ExtensionAPI, cwd: string, branchish: string): Promise<boolean> {
+	const result = await exec(pi, "git", ["rev-parse", "--verify", "--quiet", branchish], cwd);
+	return result.code === 0;
+}
+
+async function refExists(pi: ExtensionAPI, cwd: string, ref: string): Promise<boolean> {
+	const result = await exec(pi, "git", ["show-ref", "--verify", "--quiet", ref], cwd);
+	return result.code === 0;
+}
+
+function normalizeBranchName(branchish: string): string {
+	return branchish
+		.replace(/^refs\/heads\//, "")
+		.replace(/^refs\/remotes\/origin\//, "")
+		.replace(/^origin\//, "");
+}
+
+function formatPrState(pr: PullRequestInfo): string {
+	return pr.isDraft ? `${pr.state} draft` : pr.state;
+}
+
+function summarizeCommandOutput(result: ExecResult): string {
+	return [result.stdout.trim(), result.stderr.trim()].filter(Boolean).join("\n");
+}
+
+function describeCurrentWorkspace(worktree: WorktreeInfo | undefined): string {
+	if (!worktree) return "(unknown)";
+	if (worktree.isMainCheckout) return `main checkout (${workspaceBranchLabel(worktree)})`;
+	return `linked worktree (${workspaceBranchLabel(worktree)})`;
 }
 
 function formatWorkspaceOption(worktree: WorktreeInfo): string {

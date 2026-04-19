@@ -1,13 +1,16 @@
 # @steflsd/pi-wt
 
-A Pi extension for creating and switching git workspaces from inside Pi.
+A Pi extension for worktree-aware git workflows inside Pi.
 
 ## Goal
 
-Open Pi once, usually from your main checkout, then use `/wt` to either:
+Open Pi once, usually from your main checkout, then use `/wt` to:
 
-- jump to an existing worktree under your configured worktree root, or
-- create a fresh worktree for a new task and switch into a Pi session there
+- jump to an existing worktree under your configured worktree root,
+- create a fresh worktree for a new task and switch into a Pi session there,
+- inspect the current branch / detected base branch with `/wt status`,
+- rebase the current branch onto its parent/base with `/wt rebase`, or
+- view/create a PR with `/wt pr`
 
 ## Design
 
@@ -74,7 +77,9 @@ By default, new worktrees are created under:
 
 relative to the repo's main checkout.
 
-## Session behavior
+## Commands
+
+### Worktree/session commands
 
 By default:
 
@@ -85,6 +90,21 @@ Optional modes:
 
 - `/wt pick` — choose from existing sessions in that workspace
 - `/wt new` — force creation of a fresh session in that workspace
+
+### Branch/PR commands
+
+- `/wt status` — show repo root, current worktree, current branch, default branch, detected base branch, and current PR (if any)
+- `/wt rebase` — rebase the current branch onto the detected base branch
+- `/wt rebase <branch>` — rebase onto an explicit branch instead
+- `/wt pr` — show the current branch's PR, or create one if none exists yet
+- `/wt pr <branch>` — create the PR against an explicit base branch instead
+
+Base-branch detection order for `/wt rebase` and `/wt pr`:
+
+1. current PR base branch via `gh pr view`
+2. `git config branch.<name>.wt-parent`
+3. `git config branch.<name>.gh-merge-base`
+4. repo default branch from `origin/HEAD`
 
 ## Configuration
 
@@ -111,12 +131,13 @@ Relative `--wt-root` values are resolved from the repo's main checkout.
 
 ## Notes
 
-- Uses raw `git worktree` commands
+- Uses raw `git worktree`, `git rebase`, and `gh pr` commands
 - Only shows existing worktrees under the configured worktree root
 - By default, `/wt` resumes the most recent session in the selected workspace
 - Use `/wt pick` to choose a session explicitly
 - Use `/wt new` to force a fresh session
 - `.pi/wt-setup.sh` takes precedence over `--wt-setup`
+- `/wt pr` requires the GitHub CLI (`gh`)
 - No `tmux`
 - No `worktrunk` dependency in v1
 
