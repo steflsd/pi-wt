@@ -63,6 +63,7 @@ export interface PullRequestInfo {
 	isDraft: boolean;
 	baseRefName: string;
 	headRefName: string;
+	headRefOid?: string;
 }
 
 export interface BranchPublishPlan {

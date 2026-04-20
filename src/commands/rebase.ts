@@ -1,14 +1,7 @@
 import type { ExtensionAPI, ExtensionCommandContext } from "@mariozechner/pi-coding-agent";
-import {
-	detectBaseBranch,
-	exec,
-	inspectRepo,
-	normalizeBranchName,
-	readTrackedWorktreeChanges,
-	readWorktreeChanges,
-	refreshWorktreeStateStatus,
-	summarizeCommandOutput,
-} from "../git.js";
+import { findWorktreeByBranch, inspectCurrentBranchFacts } from "../branch-facts.js";
+import { evaluateRebaseReadiness, formatRebaseReadinessMessage, isReadyBranchFacts } from "../command-checks.js";
+import { exec, inspectRepo, readWorktreeChanges, refreshWorktreeStateStatus, summarizeCommandOutput } from "../git.js";
 
 export async function handleRebaseCommand(
 	pi: ExtensionAPI,
@@ -20,52 +13,34 @@ export async function handleRebaseCommand(
 		ctx.ui.notify("/wt must be run inside a git repository", "error");
 		return;
 	}
-	if (!repo.currentBranch) {
-		ctx.ui.notify("Cannot rebase from detached HEAD", "error");
-		return;
-	}
-
-	const baseBranch = await detectBaseBranch(pi, repo, repo.cwd, repo.currentBranch, explicitBase);
-	if (!baseBranch) {
-		ctx.ui.notify("Could not determine a base branch. Try /wt rebase <branch>", "error");
-		return;
-	}
-	if (normalizeBranchName(baseBranch.name) === normalizeBranchName(repo.currentBranch)) {
-		ctx.ui.notify(`Refusing to rebase ${repo.currentBranch} onto itself`, "error");
-		return;
-	}
-
-	const trackedChanges = await readTrackedWorktreeChanges(pi, repo.cwd);
-	if (trackedChanges.length > 0) {
+	const facts = await inspectCurrentBranchFacts(pi, repo, { explicitBase, changeMode: "tracked" });
+	const readiness = evaluateRebaseReadiness(facts);
+	if (readiness.kind === "has-local-changes") {
 		await refreshWorktreeStateStatus(pi, ctx);
-		const preview = trackedChanges.slice(0, 10).join("\n");
-		const remainder = trackedChanges.length > 10 ? `\n…and ${trackedChanges.length - 10} more` : "";
-		ctx.ui.notify(
-			[
-				"Cannot rebase: a clean working tree is required.",
-				"This worktree has tracked local changes.",
-				"Commit, stash, or discard them first.",
-				preview ? `\n${preview}${remainder}` : "",
-			]
-				.filter(Boolean)
-				.join("\n"),
-			"error",
-		);
+		ctx.ui.notify(formatRebaseReadinessMessage(facts, readiness), "error");
+		return;
+	}
+	if (readiness.kind !== "ready") {
+		ctx.ui.notify(formatRebaseReadinessMessage(facts, readiness), "error");
 		return;
 	}
 
-	const baseBranchInfo = repo.branches.find((branch) => branch.name === normalizeBranchName(baseBranch.name));
-	const baseBranchWorktreeChanges = baseBranchInfo?.worktreePath
-		? await readWorktreeChanges(pi, baseBranchInfo.worktreePath)
-		: [];
+	if (!isReadyBranchFacts(facts)) {
+		ctx.ui.notify("Could not determine the current branch state.", "error");
+		return;
+	}
+
+	const readyFacts = facts;
+	const baseBranchWorktree = findWorktreeByBranch(repo, readyFacts.baseBranch.name);
+	const baseBranchWorktreeChanges = baseBranchWorktree ? await readWorktreeChanges(pi, baseBranchWorktree.path) : [];
 
 	const confirmationLines = [
-		`Current branch: ${repo.currentBranch}`,
-		`Base branch: ${baseBranch.name}`,
-		`Git ref: ${baseBranch.ref}`,
-		`Source: ${baseBranch.source}`,
+		`Current branch: ${readyFacts.branch}`,
+		`Base branch: ${readyFacts.baseBranch.name}`,
+		`Git ref: ${readyFacts.baseBranch.ref}`,
+		`Source: ${readyFacts.baseBranch.source}`,
 	];
-	if (baseBranchInfo?.worktreePath) {
+	if (baseBranchWorktree) {
 		confirmationLines.push(
 			baseBranchWorktreeChanges.length > 0
 				? `Base worktree: dirty (${baseBranchWorktreeChanges.length} local changes; does not block rebase)`
@@ -80,13 +55,13 @@ export async function handleRebaseCommand(
 	}
 
 	await ctx.waitForIdle();
-	ctx.ui.setStatus("pi-wt", `Rebasing ${repo.currentBranch} onto ${baseBranch.ref}...`);
+	ctx.ui.setStatus("pi-wt", `Rebasing ${readyFacts.branch} onto ${readyFacts.baseBranch.ref}...`);
 	try {
-		const result = await exec(pi, "git", ["rebase", baseBranch.ref], repo.cwd);
+		const result = await exec(pi, "git", ["rebase", readyFacts.baseBranch.ref], repo.cwd);
 		if (result.code === 0) {
 			const output = summarizeCommandOutput(result);
 			ctx.ui.notify(
-				[`Rebased ${repo.currentBranch} onto ${baseBranch.name}.`, output ? `\n${output}` : ""]
+				[`Rebased ${readyFacts.branch} onto ${readyFacts.baseBranch.name}.`, output ? `\n${output}` : ""]
 					.filter(Boolean)
 					.join("\n"),
 				"info",
@@ -96,7 +71,7 @@ export async function handleRebaseCommand(
 
 		ctx.ui.notify(
 			[
-				`git rebase ${baseBranch.ref} failed.`,
+				`git rebase ${readyFacts.baseBranch.ref} failed.`,
 				summarizeCommandOutput(result) ||
 					"Resolve conflicts, then run git rebase --continue or git rebase --abort.",
 			].join("\n\n"),

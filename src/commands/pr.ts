@@ -1,14 +1,14 @@
 import type { ExtensionAPI, ExtensionCommandContext } from "@mariozechner/pi-coding-agent";
+import { inspectCurrentBranchFacts } from "../branch-facts.js";
+import { evaluatePrReadiness, formatPrReadinessMessage, isReadyBranchFacts } from "../command-checks.js";
 import { commitAllChangesWithDraft } from "../commits.js";
 import {
-	detectBaseBranch,
 	exec,
 	formatPrState,
 	hasGhCli,
 	inspectRepo,
 	planCurrentBranchPublish,
 	readCurrentPr,
-	readWorktreeChanges,
 	summarizeCommandOutput,
 } from "../git.js";
 import { createPullRequest, generatePullRequestDraft, summarizeCreatePullRequestResult } from "../pull-requests.js";
@@ -24,56 +24,63 @@ export async function handlePrCommand(
 		ctx.ui.notify("/wt must be run inside a git repository", "error");
 		return;
 	}
-	if (!repo.currentBranch) {
-		ctx.ui.notify("Cannot manage a PR from detached HEAD", "error");
-		return;
-	}
-
 	if (!(await hasGhCli(pi, repo.cwd))) {
 		ctx.ui.notify("gh CLI is required for /wt pr", "error");
 		return;
 	}
 
 	const existingPr = await readCurrentPr(pi, repo.cwd);
-	const baseBranch = await detectBaseBranch(
-		pi,
-		repo,
-		repo.cwd,
-		repo.currentBranch,
-		existingPr ? undefined : explicitBase,
-	);
-	if (!baseBranch) {
-		ctx.ui.notify("Could not determine a base branch. Try /wt pr <branch>", "error");
+	const facts = await inspectCurrentBranchFacts(pi, repo, {
+		explicitBase: existingPr ? undefined : explicitBase,
+		pullRequest: existingPr,
+		changeMode: "all",
+	});
+	const readiness = evaluatePrReadiness(facts);
+	if (readiness.kind !== "ready" && readiness.kind !== "needs-commit") {
+		ctx.ui.notify(formatPrReadinessMessage(readiness), "error");
 		return;
 	}
 
-	const localChanges = await readWorktreeChanges(pi, repo.cwd, true);
-	if (localChanges.length > 0) {
+	if (!isReadyBranchFacts(facts)) {
+		ctx.ui.notify("Could not determine the current branch state.", "error");
+		return;
+	}
+
+	const readyFacts = facts;
+	if (readiness.kind === "needs-commit") {
 		const shouldCommit = await ctx.ui.confirm(
 			existingPr ? "Commit and update PR" : "Commit and create PR",
-			`${repo.currentBranch} has local changes. ${existingPr ? "Updating this PR" : "Creating a PR"} requires a commit first.`,
+			`${readyFacts.branch} has local changes. ${existingPr ? "Updating this PR" : "Creating a PR"} requires a commit first.`,
 		);
 		if (!shouldCommit) {
 			ctx.ui.notify("Cancelled", "info");
 			return;
 		}
 
-		const committed = await commitAllChangesWithDraft(pi, ctx, repo, repo.cwd, repo.currentBranch, baseBranch, {
-			actionLabel: "Committing changes",
-			promptTitle: `Commit message · ${repo.currentBranch}`,
-		});
+		const committed = await commitAllChangesWithDraft(
+			pi,
+			ctx,
+			repo,
+			repo.cwd,
+			readyFacts.branch,
+			readyFacts.baseBranch,
+			{
+				actionLabel: "Committing changes",
+				promptTitle: `Commit message · ${readyFacts.branch}`,
+			},
+		);
 		if (!committed) {
 			return;
 		}
 	}
 
-	const publishPlan = await planCurrentBranchPublish(pi, repo.cwd, repo.currentBranch);
+	const publishPlan = await planCurrentBranchPublish(pi, repo.cwd, readyFacts.branch);
 	if (publishPlan.needsPush && !publishPlan.commandArgs) {
 		ctx.ui.notify(
 			[
 				existingPr
-					? `Cannot update the PR for ${repo.currentBranch} because the branch is not published.`
-					: `Cannot create a PR for ${repo.currentBranch} because the branch is not published.`,
+					? `Cannot update the PR for ${readyFacts.branch} because the branch is not published.`
+					: `Cannot create a PR for ${readyFacts.branch} because the branch is not published.`,
 				publishPlan.reason ?? "Push the branch manually or configure a default push remote.",
 			].join("\n\n"),
 			"error",
@@ -84,14 +91,14 @@ export async function handlePrCommand(
 	await ctx.waitForIdle();
 	try {
 		if (publishPlan.commandArgs) {
-			ctx.ui.setStatus("pi-wt", `Publishing ${repo.currentBranch}...`);
+			ctx.ui.setStatus("pi-wt", `Publishing ${readyFacts.branch}...`);
 			const pushResult = await exec(pi, "git", publishPlan.commandArgs, repo.cwd);
 			if (pushResult.code !== 0) {
 				ctx.ui.notify(
 					[
 						existingPr
-							? `Failed to publish ${repo.currentBranch} before updating its PR.`
-							: `Failed to publish ${repo.currentBranch} before creating a PR.`,
+							? `Failed to publish ${readyFacts.branch} before updating its PR.`
+							: `Failed to publish ${readyFacts.branch} before creating a PR.`,
 						summarizeCommandOutput(pushResult) || "Check git remote configuration and try again.",
 					].join("\n\n"),
 					"error",
@@ -118,18 +125,18 @@ export async function handlePrCommand(
 
 		let draft: PullRequestDraft | null = null;
 		try {
-			ctx.ui.setStatus("pi-wt", `Drafting PR for ${repo.currentBranch}...`);
-			draft = await generatePullRequestDraft(pi, ctx, repo, baseBranch);
+			ctx.ui.setStatus("pi-wt", `Drafting PR for ${readyFacts.branch}...`);
+			draft = await generatePullRequestDraft(pi, ctx, repo, readyFacts.baseBranch);
 		} catch {
 			draft = null;
 		}
 
-		ctx.ui.setStatus("pi-wt", `Creating PR for ${repo.currentBranch}...`);
-		const created = await createPullRequest(pi, repo.cwd, baseBranch.name, draft);
+		ctx.ui.setStatus("pi-wt", `Creating PR for ${readyFacts.branch}...`);
+		const created = await createPullRequest(pi, repo.cwd, readyFacts.baseBranch.name, draft);
 		if (created.result.code === 0) {
 			ctx.ui.notify(
 				[
-					`Created PR for ${repo.currentBranch} against ${baseBranch.name}.`,
+					`Created PR for ${readyFacts.branch} against ${readyFacts.baseBranch.name}.`,
 					draft && created.mode === "generated" ? `Prompt: ${draft.promptPath}` : null,
 					created.mode === "fill" && ctx.model ? "Fell back to gh --fill." : null,
 					formatPrCommandOutput(created.result),
@@ -143,7 +150,7 @@ export async function handlePrCommand(
 
 		ctx.ui.notify(
 			[
-				`gh pr create failed for ${repo.currentBranch}.`,
+				`gh pr create failed for ${readyFacts.branch}.`,
 				draft ? `Prompt: ${draft.promptPath}` : null,
 				summarizeCreatePullRequestResult(created.result) || "Check gh auth and repository settings.",
 			]

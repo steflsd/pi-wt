@@ -1,5 +1,6 @@
 import type { ExtensionAPI, ExtensionCommandContext } from "@mariozechner/pi-coding-agent";
-import { detectBaseBranch, formatPrState, inspectRepo, normalizeBranchName, readCurrentPr } from "../git.js";
+import { inspectCurrentBranchFacts } from "../branch-facts.js";
+import { formatPrState, inspectRepo, normalizeBranchName } from "../git.js";
 import { reportMessage } from "../shared.js";
 import { describeCurrentWorkspace } from "../worktrees.js";
 
@@ -10,27 +11,26 @@ export async function handleStatusCommand(pi: ExtensionAPI, ctx: ExtensionComman
 		return;
 	}
 
-	const currentWorktree = repo.worktrees.find((worktree) => worktree.isCurrent);
 	const isDefaultBranch =
 		repo.currentBranch && repo.defaultBranch
 			? normalizeBranchName(repo.currentBranch) === normalizeBranchName(repo.defaultBranch)
 			: false;
-	const pr = isDefaultBranch ? null : await readCurrentPr(pi, repo.cwd);
-	const baseBranch =
-		repo.currentBranch && !isDefaultBranch ? await detectBaseBranch(pi, repo, repo.cwd, repo.currentBranch) : null;
+	const facts = await inspectCurrentBranchFacts(pi, repo, { includePullRequest: !isDefaultBranch });
 
 	const lines = [
 		`Repo root: ${repo.repoRoot}`,
 		`Main checkout: ${repo.mainCheckoutPath}`,
 		`Current cwd: ${repo.cwd}`,
-		`Workspace: ${describeCurrentWorkspace(currentWorktree)}`,
-		`Branch: ${repo.currentBranch ?? "(detached HEAD)"}`,
+		`Workspace: ${describeCurrentWorkspace(facts.worktree ?? undefined)}`,
+		`Branch: ${facts.branch ?? "(detached HEAD)"}`,
 		`Default branch: ${repo.defaultBranch ?? "(unknown)"}`,
-		...(isDefaultBranch
+		...(facts.isDefaultBranch
 			? []
 			: [
-					`Detected base: ${baseBranch ? `${baseBranch.name} (${baseBranch.source})` : "(none)"}`,
-					pr ? `PR: #${pr.number} ${pr.title} [${formatPrState(pr)}]\n  ${pr.url}` : "PR: (none)",
+					`Detected base: ${facts.baseBranch ? `${facts.baseBranch.name} (${facts.baseBranch.source})` : "(none)"}`,
+					facts.pullRequest
+						? `PR: #${facts.pullRequest.number} ${facts.pullRequest.title} [${formatPrState(facts.pullRequest)}]\n  ${facts.pullRequest.url}`
+						: "PR: (none)",
 				]),
 	];
 

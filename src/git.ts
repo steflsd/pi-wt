@@ -128,18 +128,29 @@ function parseWorktrees(output: string, currentCwd: string, mainCheckoutPath: st
 		.filter((value): value is WorktreeInfo => Boolean(value));
 }
 
+export interface DetectBaseBranchOptions {
+	includePullRequest?: boolean;
+	pullRequest?: PullRequestInfo | null;
+}
+
 export async function detectBaseBranch(
 	pi: ExtensionAPI,
 	repo: RepoState,
 	cwd: string,
 	currentBranch: string,
 	explicitBase?: string,
+	options?: DetectBaseBranchOptions,
 ): Promise<BaseBranchSelection | null> {
 	if (explicitBase?.trim()) {
 		return resolveBaseBranchSelection(pi, cwd, explicitBase.trim(), "explicit argument");
 	}
 
-	const pr = await readCurrentPr(pi, cwd);
+	const pr =
+		options?.pullRequest !== undefined
+			? options.pullRequest
+			: options?.includePullRequest === false
+				? null
+				: await readCurrentPr(pi, cwd);
 	if (pr?.baseRefName) {
 		return resolveBaseBranchSelection(pi, cwd, pr.baseRefName, "current PR base");
 	}
@@ -195,7 +206,7 @@ export async function readCurrentPr(pi: ExtensionAPI, cwd: string): Promise<Pull
 	const result = await exec(
 		pi,
 		"gh",
-		["pr", "view", "--json", "number,title,url,state,isDraft,baseRefName,headRefName"],
+		["pr", "view", "--json", "number,title,url,state,isDraft,baseRefName,headRefName,headRefOid"],
 		cwd,
 	);
 	if (result.code !== 0) {

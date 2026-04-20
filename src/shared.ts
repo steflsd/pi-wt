@@ -30,3 +30,12 @@ export function reportMessage(
 
 	console.log(message);
 }
+
+export function formatChangesPreview(changes: string[], limit = 10): string {
+	const preview = changes.slice(0, limit).join("\n");
+	if (!preview) {
+		return "";
+	}
+	const remainder = changes.length > limit ? `\n…and ${changes.length - limit} more` : "";
+	return `${preview}${remainder}`;
+}
