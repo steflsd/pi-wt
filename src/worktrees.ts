@@ -133,18 +133,24 @@ export async function chooseWorkspaceTarget(
 		selectList.onSelect = (item) => done(itemsByValue.get(item.value)?.choice);
 		selectList.onCancel = () => done(undefined);
 		container.addChild(selectList);
-		container.addChild(new Text(theme.fg("dim", "↑↓ navigate  enter select  a archive  esc cancel"), 1, 0));
+		container.addChild(new Text(theme.fg("dim", "↑↓ navigate  enter select  a archive  l land  esc cancel"), 1, 0));
 		container.addChild(new DynamicBorder((text: string) => theme.fg("accent", text)));
 
 		return {
 			render: (width: number) => container.render(width),
 			invalidate: () => container.invalidate(),
 			handleInput: (data: string) => {
+				const selected = selectList.getSelectedItem();
+				const item = selected ? itemsByValue.get(selected.value) : undefined;
 				if (isArchiveKey(data)) {
-					const selected = selectList.getSelectedItem();
-					const item = selected ? itemsByValue.get(selected.value) : undefined;
 					if (item?.choice.type === "workspace" && item.choice.workspace) {
 						done({ type: "archive-worktree", worktreePath: item.choice.workspace.cwd });
+					}
+					return;
+				}
+				if (isLandKey(data)) {
+					if (item?.choice.type === "workspace" && item.choice.workspace) {
+						done({ type: "land-worktree", worktreePath: item.choice.workspace.cwd });
 					}
 					return;
 				}
@@ -344,6 +350,7 @@ export async function archiveWorktreeAtPathFlow(
 	repo: RepoState,
 	worktreeRoot: string,
 	worktreePath: string,
+	options?: { skipConfirmation?: boolean; skipSuccessNotification?: boolean },
 ): Promise<boolean> {
 	const resolvedWorktreeRoot = resolveWorktreeRoot(repo.mainCheckoutPath, worktreeRoot);
 	const candidates = await listArchiveCandidates(pi, repo, resolvedWorktreeRoot);
@@ -352,7 +359,7 @@ export async function archiveWorktreeAtPathFlow(
 		ctx.ui.notify(`Could not find an archivable linked worktree at ${worktreePath}.`, "warning");
 		return false;
 	}
-	return archiveWorktreeCandidateFlow(pi, ctx, repo, candidate);
+	return archiveWorktreeCandidateFlow(pi, ctx, repo, candidate, options);
 }
 
 async function archiveWorktreeCandidateFlow(
@@ -360,6 +367,7 @@ async function archiveWorktreeCandidateFlow(
 	ctx: ExtensionCommandContext,
 	repo: RepoState,
 	candidate: ArchiveCandidate,
+	options?: { skipConfirmation?: boolean; skipSuccessNotification?: boolean },
 ): Promise<boolean> {
 	if (candidate.changes.length > 0) {
 		ctx.ui.notify(
@@ -396,16 +404,18 @@ async function archiveWorktreeCandidateFlow(
 		}
 	}
 
-	const confirmationLines = [
-		`Branch: ${candidate.worktree.branch ?? "(detached HEAD)"}`,
-		`Path: ${candidate.worktree.path}`,
-		`Delete local branch: ${describeArchiveBranchAction(candidate)}`,
-		...(switchPlan ? [`Base branch: ${switchPlan.baseBranch}`] : []),
-		"This removes the linked worktree directory.",
-	];
-	const confirmed = await ctx.ui.confirm("Archive worktree", confirmationLines.join("\n"));
-	if (!confirmed) {
-		return false;
+	if (!options?.skipConfirmation) {
+		const confirmationLines = [
+			`Branch: ${candidate.worktree.branch ?? "(detached HEAD)"}`,
+			`Path: ${candidate.worktree.path}`,
+			`Delete local branch: ${describeArchiveBranchAction(candidate)}`,
+			...(switchPlan ? [`Base branch: ${switchPlan.baseBranch}`] : []),
+			"This removes the linked worktree directory.",
+		];
+		const confirmed = await ctx.ui.confirm("Archive worktree", confirmationLines.join("\n"));
+		if (!confirmed) {
+			return false;
+		}
 	}
 
 	if (switchPlan) {
@@ -455,12 +465,14 @@ async function archiveWorktreeCandidateFlow(
 			}
 		}
 
-		ctx.ui.notify(
-			candidate.deleteBranch && candidate.worktree.branch
-				? `Archived ${candidate.worktree.branch}: removed worktree and deleted the local branch.`
-				: `Archived ${workspaceBranchLabel(candidate.worktree)}: removed the worktree.`,
-			"info",
-		);
+		if (!options?.skipSuccessNotification) {
+			ctx.ui.notify(
+				candidate.deleteBranch && candidate.worktree.branch
+					? `Archived ${candidate.worktree.branch}: removed worktree and deleted the local branch.`
+					: `Archived ${workspaceBranchLabel(candidate.worktree)}: removed the worktree.`,
+				"info",
+			);
+		}
 		return true;
 	} finally {
 		ctx.ui.setStatus("pi-wt", undefined);
@@ -497,10 +509,11 @@ async function chooseBaseBranch(
 		return preferred;
 	}
 
-	const recentBranches = branches.slice(0, Math.max(1, branchPickerLimit));
+	const prioritizedBranches = prioritizeBaseBranchesForPicker(branches);
+	const recentBranches = prioritizedBranches.slice(0, Math.max(1, branchPickerLimit));
 	const labels = recentBranches.map((branch) => formatBaseBranchOption(branch));
 	const byLabel = new Map(labels.map((label, index) => [label, recentBranches[index]]));
-	const hasMoreBranches = branches.length > recentBranches.length;
+	const hasMoreBranches = prioritizedBranches.length > recentBranches.length;
 	if (hasMoreBranches) {
 		labels.push(OTHER_BASE_BRANCH_LABEL);
 	}
@@ -680,6 +693,7 @@ export function readProjectWorktreeSettings(repo: RepoState): WorktreeProjectSet
 		return {
 			templates: [],
 			branchPickerLimit: DEFAULT_BASE_BRANCH_PICKER_LIMIT,
+			archiveAfterLand: true,
 			editorCommand: null,
 			terminalCommand: null,
 			newWorktreeTabCommand: null,
@@ -692,6 +706,7 @@ export function readProjectWorktreeSettings(repo: RepoState): WorktreeProjectSet
 			wt?: {
 				templates?: Array<{ name?: unknown; prefix?: unknown; base?: unknown }>;
 				branchPickerLimit?: unknown;
+				archiveAfterLand?: unknown;
 				editorCommand?: unknown;
 				terminalCommand?: unknown;
 				newWorktreeTabCommand?: unknown;
@@ -714,6 +729,7 @@ export function readProjectWorktreeSettings(repo: RepoState): WorktreeProjectSet
 			wtSettings.branchPickerLimit > 0
 				? wtSettings.branchPickerLimit
 				: DEFAULT_BASE_BRANCH_PICKER_LIMIT;
+		const archiveAfterLand = typeof wtSettings?.archiveAfterLand === "boolean" ? wtSettings.archiveAfterLand : true;
 		const editorCommand =
 			typeof wtSettings?.editorCommand === "string" && wtSettings.editorCommand.trim().length > 0
 				? wtSettings.editorCommand.trim()
@@ -726,11 +742,12 @@ export function readProjectWorktreeSettings(repo: RepoState): WorktreeProjectSet
 			typeof wtSettings?.newWorktreeTabCommand === "string" && wtSettings.newWorktreeTabCommand.trim().length > 0
 				? wtSettings.newWorktreeTabCommand.trim()
 				: null;
-		return { templates, branchPickerLimit, editorCommand, terminalCommand, newWorktreeTabCommand };
+		return { templates, branchPickerLimit, archiveAfterLand, editorCommand, terminalCommand, newWorktreeTabCommand };
 	} catch {
 		return {
 			templates: [],
 			branchPickerLimit: DEFAULT_BASE_BRANCH_PICKER_LIMIT,
+			archiveAfterLand: true,
 			editorCommand: null,
 			terminalCommand: null,
 			newWorktreeTabCommand: null,
@@ -866,6 +883,26 @@ function formatWorktreeTemplateOption(template: WorktreeTemplate): string {
 	return `${template.name}\n  ${details}`;
 }
 
+function prioritizeBaseBranchesForPicker(branches: BranchInfo[]): BranchInfo[] {
+	return branches
+		.map((branch, index) => ({ branch, index }))
+		.sort((left, right) => compareBaseBranchPriority(left.branch, right.branch) || left.index - right.index)
+		.map(({ branch }) => branch);
+}
+
+function compareBaseBranchPriority(left: BranchInfo, right: BranchInfo): number {
+	return baseBranchPriority(left) - baseBranchPriority(right);
+}
+
+function baseBranchPriority(branch: BranchInfo): number {
+	if (branch.isDefault) return 0;
+
+	const normalized = normalizeBranchName(branch.name);
+	if (normalized === "main" || normalized === "master") return 1;
+	if (branch.isCurrent) return 2;
+	return 3;
+}
+
 function formatBaseBranchOption(branch: BranchInfo): string {
 	const flags = [
 		branch.isCurrent ? "current" : "",
@@ -914,6 +951,10 @@ function sanitizeBranchForPath(branch: string): string {
 
 function isArchiveKey(data: string): boolean {
 	return data === "a" || data === "A" || matchesKey(data, "a") || matchesKey(data, "shift+a");
+}
+
+function isLandKey(data: string): boolean {
+	return data === "l" || data === "L" || matchesKey(data, "l") || matchesKey(data, "shift+l");
 }
 
 function quoteShellArg(value: string): string {

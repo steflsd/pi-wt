@@ -39,7 +39,7 @@ export interface WorkspaceTarget {
 }
 
 export interface WorkspaceMenuChoice {
-	type: "workspace" | "create-worktree" | "archive-worktree";
+	type: "workspace" | "create-worktree" | "archive-worktree" | "land-worktree";
 	workspace?: WorkspaceTarget;
 	worktreePath?: string;
 }
@@ -88,14 +88,22 @@ export interface WorktreeTemplate {
 export interface WorktreeProjectSettings {
 	templates: WorktreeTemplate[];
 	branchPickerLimit: number;
+	archiveAfterLand: boolean;
 	editorCommand: string | null;
 	terminalCommand: string | null;
 	newWorktreeTabCommand: string | null;
 }
 
+export interface CommitDraft {
+	title: string;
+	body: string;
+	promptPath: string;
+}
+
 export type WtCommand =
 	| { kind: "workspace" }
 	| { kind: "status" }
+	| { kind: "land" }
 	| { kind: "rebase"; explicitBase?: string }
 	| { kind: "pr"; explicitBase?: string }
 	| { kind: "editor" }
