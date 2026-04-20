@@ -1,5 +1,6 @@
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
 import { getWtArgumentCompletions, parseWtCommand, wtUsageText } from "./command-spec.js";
+import { handleLandCommand } from "./commands/land.js";
 import { handleEditorCommand, handleTerminalCommand } from "./commands/open.js";
 import { handlePrCommand } from "./commands/pr.js";
 import { handleRebaseCommand } from "./commands/rebase.js";
@@ -69,12 +70,12 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.registerCommand("wt", {
-		description: "Worktree helpers: switch/create worktrees, show status, rebase, and manage PRs",
+		description: "Worktree helpers: switch/create worktrees, show status, land, rebase, and manage PRs",
 		getArgumentCompletions: (prefix) => getWtArgumentCompletions(prefix),
 		handler: async (args, ctx) => {
 			try {
 				const command = parseWtCommand(args);
-				if (!ctx.hasUI && ["workspace", "rebase", "pr"].includes(command.kind)) {
+				if (!ctx.hasUI && ["workspace", "land", "rebase", "pr"].includes(command.kind)) {
 					const commandLabel = command.kind === "workspace" ? "/wt" : `/wt ${command.kind}`;
 					throw new Error(`${commandLabel} requires a UI-capable mode`);
 				}
@@ -85,6 +86,9 @@ export default function (pi: ExtensionAPI) {
 						return;
 					case "status":
 						await handleStatusCommand(pi, ctx);
+						return;
+					case "land":
+						await handleLandCommand(pi, ctx);
 						return;
 					case "rebase":
 						await handleRebaseCommand(pi, ctx, command.explicitBase);

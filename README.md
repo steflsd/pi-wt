@@ -7,6 +7,7 @@ Use `/wt` to:
 - switch to an existing linked worktree,
 - create a new worktree and start `pi` there,
 - inspect branch and base-branch status,
+- land a feature branch into its detected base branch,
 - rebase onto the detected base branch,
 - open the current worktree in your editor or terminal, and
 - view or create a PR.
@@ -63,6 +64,7 @@ That review should be about the extension package and how it is used, not a secu
 Interactive UI mode is required for:
 
 - `/wt`
+- `/wt land`
 - `/wt rebase`
 - `/wt pr`
 
@@ -99,6 +101,8 @@ You will see:
 - existing linked worktrees under the configured worktree root
 
 Press **`a`** in the picker to archive the highlighted linked worktree. If it is the current worktree, `pi-wt` switches away first and checks out its recorded base branch before archiving.
+
+Press **`l`** in the picker to land the highlighted linked worktree: commit dirty changes first, rebase onto its detected base branch, fast-forward merge into the base checkout, and auto-archive by default.
 
 ### Creating a worktree
 
@@ -167,13 +171,18 @@ After creation:
 ### Branch and PR commands
 
 - `/wt status` — show repo root, current worktree, current branch, default branch, detected base branch, and PR info when relevant
+- `/wt land` — land the current branch into its detected base branch; dirty worktrees are committed first, then rebased, fast-forward merged, and auto-archived by default
 - `/wt rebase` — rebase the current branch onto its detected base branch
 - `/wt rebase <branch>` — rebase onto an explicit base branch instead
-- `/wt pr` — show the current branch's PR, or create one if none exists yet
+- `/wt pr` — show the current branch's PR, create one if none exists yet, or update the existing PR by committing and pushing local changes first when needed
 - `/wt pr <branch>` — create the PR against an explicit base branch instead
 
 Notes:
 
+- `/wt land` uses the same base-branch detection as `/wt rebase` and `/wt pr`
+- `/wt land` can also be triggered from the `/wt` picker with `l`
+- `/wt land` commits dirty worktrees first using a drafted/editable commit message from `.pi/wt/commit.md`
+- `/wt pr` does the same when the current branch has local changes, then creates or updates the PR by pushing the branch
 - `/wt rebase` requires a clean working tree
 - `/wt pr` requires `gh`
 - if the branch is unpublished or ahead of its upstream, `/wt pr` pushes it first as needed
@@ -181,7 +190,7 @@ Notes:
 
 ### Base-branch detection order
 
-For `/wt rebase` and `/wt pr`, base-branch detection is:
+For `/wt land`, `/wt rebase`, and `/wt pr`, base-branch detection is:
 
 1. current PR base branch via `gh pr view`
 2. `git config branch.<name>.wt-parent`
@@ -206,9 +215,10 @@ This extension uses Pi's standard project-local `.pi/` directory.
 
 - `.pi/wt/setup.sh` — optional repo-local setup script read from the repo's main checkout and executed with newly created worktrees as the working directory
 - `.pi/wt/pr.md` — optional prompt override for `/wt pr` title/body drafting
-- `.pi/settings.json` — optional worktree templates and open commands
+- `.pi/wt/commit.md` — optional prompt override for `/wt land` and `/wt pr` commit-message drafting
+- `.pi/settings.json` — optional worktree templates, land behavior, and open commands
 
-If `.pi/wt/pr.md` is missing, `pi-wt` uses its bundled default prompt.
+If `.pi/wt/pr.md` or `.pi/wt/commit.md` is missing, `pi-wt` uses its bundled default prompt.
 
 ### Example `.pi/settings.json`
 
@@ -221,6 +231,7 @@ If `.pi/wt/pr.md` is missing, `pi-wt` uses its bundled default prompt.
       { "name": "spike", "prefix": "spike/" }
     ],
     "branchPickerLimit": 12,
+    "archiveAfterLand": true,
     "editorCommand": "cursor {{path}}",
     "terminalCommand": "open -a Terminal {{path}}",
     "newWorktreeTabCommand": "wezterm start --cwd {{path}} {{command}}"
@@ -235,6 +246,10 @@ When templates are present, `/wt` shows a template list before the normal base-b
 `wt.branchPickerLimit`
 - how many recent local branches are shown before falling back to **Other branch…**
 - default: `12`
+
+`wt.archiveAfterLand`
+- whether `/wt land` auto-archives a successfully landed linked worktree
+- default: `true`
 
 `wt.editorCommand` and `wt.terminalCommand`
 - `{{path}}` is replaced with the current worktree root path
@@ -274,5 +289,8 @@ Relative `--wt-root` values are resolved from the repo's main checkout.
 - only shows existing worktrees under the configured worktree root
 - creating a new worktree starts `pi` in that worktree; when creating from the main/default branch with existing session history, `/wt` carries the current session across automatically
 - the main checkout's `.pi/wt/setup.sh` takes precedence over `--wt-setup`
-- `/wt pr` will push the current branch first when needed so `gh pr create` can run non-interactively
+- `/wt land` uses the active model to draft commit messages from `.pi/wt/commit.md` when available, then lets you edit/confirm before committing
+- `/wt land` auto-archives landed linked worktrees by default; set `wt.archiveAfterLand` to `false` to keep them
+- `/wt pr` also uses `.pi/wt/commit.md` when it needs to commit local changes before creating or updating a PR
+- `/wt pr` will push the current branch first when needed so `gh pr create` can run non-interactively, and pushing new commits updates an existing PR on the same branch
 - `/wt pr` uses the active model to draft the PR title/body from `.pi/wt/pr.md` when available, and falls back to `gh pr create --fill` if drafting fails or no model is selected

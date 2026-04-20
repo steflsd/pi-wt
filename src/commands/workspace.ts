@@ -18,6 +18,7 @@ import {
 	readProjectWorktreeSettings,
 	workspaceSummary,
 } from "../worktrees.js";
+import { landWorktreeAtPathFlow } from "./land.js";
 import { launchWorktreeInNewTab } from "./open.js";
 
 export async function handleWorkspaceCommand(pi: ExtensionAPI, ctx: ExtensionCommandContext): Promise<void> {
@@ -47,6 +48,13 @@ export async function handleWorkspaceCommand(pi: ExtensionAPI, ctx: ExtensionCom
 				return;
 			}
 			continue;
+		}
+
+		if (menuChoice.type === "land-worktree") {
+			if (menuChoice.worktreePath) {
+				await landWorktreeAtPathFlow(pi, ctx, menuChoice.worktreePath);
+			}
+			return;
 		}
 
 		if (menuChoice.type === "workspace") {

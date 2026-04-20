@@ -6,6 +6,7 @@ export function getWtArgumentCompletions(prefix: string) {
 
 	const items = [
 		{ value: "status", label: "show current worktree, branch, base branch, and PR info" },
+		{ value: "land", label: "land the current branch into its detected base branch and auto-archive by default" },
 		{
 			value: "rebase",
 			label: "update the current branch by rebasing onto its detected base branch; requires a clean working tree",
@@ -31,6 +32,11 @@ export function parseWtCommand(args: string): WtCommand {
 	if (normalized === "status") {
 		if (trailing) throw new Error("Usage: /wt status");
 		return { kind: "status" };
+	}
+
+	if (normalized === "land") {
+		if (trailing) throw new Error("Usage: /wt land");
+		return { kind: "land" };
 	}
 
 	if (normalized === "rebase") {
@@ -63,6 +69,7 @@ export function wtUsageText(): string {
 		"Usage:",
 		"/wt               Open the worktree list and choose a session, or create one if none exists",
 		"/wt status        Show current branch, base branch, and PR info",
+		"/wt land          Rebase current branch onto its detected base branch, fast-forward merge into the base branch, and auto-archive by default (disable with wt.archiveAfterLand = false)",
 		"/wt rebase [base] Update current branch by rebasing onto detected or explicit base branch; requires a clean working tree",
 		"/wt pr [base]     View current PR, or create one against detected or explicit base branch",
 		"/wt editor        Open the current worktree in your configured editor (alias: /wt edit)",

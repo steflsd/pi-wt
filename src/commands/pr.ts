@@ -1,4 +1,5 @@
 import type { ExtensionAPI, ExtensionCommandContext } from "@mariozechner/pi-coding-agent";
+import { commitAllChangesWithDraft } from "../commits.js";
 import {
 	detectBaseBranch,
 	exec,
@@ -7,6 +8,7 @@ import {
 	inspectRepo,
 	planCurrentBranchPublish,
 	readCurrentPr,
+	readWorktreeChanges,
 	summarizeCommandOutput,
 } from "../git.js";
 import { createPullRequest, generatePullRequestDraft, summarizeCreatePullRequestResult } from "../pull-requests.js";
@@ -33,31 +35,45 @@ export async function handlePrCommand(
 	}
 
 	const existingPr = await readCurrentPr(pi, repo.cwd);
-	if (existingPr) {
-		ctx.ui.notify(
-			[
-				`PR #${existingPr.number}: ${existingPr.title}`,
-				`State: ${formatPrState(existingPr)}`,
-				`Base: ${existingPr.baseRefName}`,
-				`Head: ${existingPr.headRefName}`,
-				formatPrLink(existingPr.url),
-			].join("\n"),
-			"info",
-		);
-		return;
-	}
-
-	const baseBranch = await detectBaseBranch(pi, repo, repo.cwd, repo.currentBranch, explicitBase);
+	const baseBranch = await detectBaseBranch(
+		pi,
+		repo,
+		repo.cwd,
+		repo.currentBranch,
+		existingPr ? undefined : explicitBase,
+	);
 	if (!baseBranch) {
 		ctx.ui.notify("Could not determine a base branch. Try /wt pr <branch>", "error");
 		return;
+	}
+
+	const localChanges = await readWorktreeChanges(pi, repo.cwd, true);
+	if (localChanges.length > 0) {
+		const shouldCommit = await ctx.ui.confirm(
+			existingPr ? "Commit and update PR" : "Commit and create PR",
+			`${repo.currentBranch} has local changes. ${existingPr ? "Updating this PR" : "Creating a PR"} requires a commit first.`,
+		);
+		if (!shouldCommit) {
+			ctx.ui.notify("Cancelled", "info");
+			return;
+		}
+
+		const committed = await commitAllChangesWithDraft(pi, ctx, repo, repo.cwd, repo.currentBranch, baseBranch, {
+			actionLabel: "Committing changes",
+			promptTitle: `Commit message · ${repo.currentBranch}`,
+		});
+		if (!committed) {
+			return;
+		}
 	}
 
 	const publishPlan = await planCurrentBranchPublish(pi, repo.cwd, repo.currentBranch);
 	if (publishPlan.needsPush && !publishPlan.commandArgs) {
 		ctx.ui.notify(
 			[
-				`Cannot create a PR for ${repo.currentBranch} because the branch is not published.`,
+				existingPr
+					? `Cannot update the PR for ${repo.currentBranch} because the branch is not published.`
+					: `Cannot create a PR for ${repo.currentBranch} because the branch is not published.`,
 				publishPlan.reason ?? "Push the branch manually or configure a default push remote.",
 			].join("\n\n"),
 			"error",
@@ -73,13 +89,31 @@ export async function handlePrCommand(
 			if (pushResult.code !== 0) {
 				ctx.ui.notify(
 					[
-						`Failed to publish ${repo.currentBranch} before creating a PR.`,
+						existingPr
+							? `Failed to publish ${repo.currentBranch} before updating its PR.`
+							: `Failed to publish ${repo.currentBranch} before creating a PR.`,
 						summarizeCommandOutput(pushResult) || "Check git remote configuration and try again.",
 					].join("\n\n"),
 					"error",
 				);
 				return;
 			}
+		}
+
+		if (existingPr) {
+			ctx.ui.notify(
+				[
+					publishPlan.commandArgs
+						? `Updated PR #${existingPr.number}: ${existingPr.title}`
+						: `PR #${existingPr.number}: ${existingPr.title}`,
+					`State: ${formatPrState(existingPr)}`,
+					`Base: ${existingPr.baseRefName}`,
+					`Head: ${existingPr.headRefName}`,
+					formatPrLink(existingPr.url),
+				].join("\n"),
+				"info",
+			);
+			return;
 		}
 
 		let draft: PullRequestDraft | null = null;
