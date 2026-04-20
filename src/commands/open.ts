@@ -1,5 +1,6 @@
 import type { ExtensionAPI, ExtensionCommandContext } from "@mariozechner/pi-coding-agent";
 import { execShell, inspectRepo } from "../git.js";
+import { reportMessage } from "../shared.js";
 import type { RepoState } from "../types.js";
 import { readProjectWorktreeSettings } from "../worktrees.js";
 
@@ -18,19 +19,19 @@ interface LaunchCommandCandidate {
 export async function handleEditorCommand(pi: ExtensionAPI, ctx: ExtensionCommandContext): Promise<void> {
 	const repo = await inspectRepo(pi, ctx.cwd);
 	if (!repo) {
-		ctx.ui.notify("/wt editor must be run inside a git repository", "error");
+		reportMessage(ctx, "/wt editor must be run inside a git repository", "error");
 		return;
 	}
-	await openWorkspaceTarget(pi, ctx, repo, repo.cwd, "editor");
+	await openWorkspaceTarget(pi, ctx, repo, currentWorkspaceRoot(repo), "editor");
 }
 
 export async function handleTerminalCommand(pi: ExtensionAPI, ctx: ExtensionCommandContext): Promise<void> {
 	const repo = await inspectRepo(pi, ctx.cwd);
 	if (!repo) {
-		ctx.ui.notify("/wt term must be run inside a git repository", "error");
+		reportMessage(ctx, "/wt terminal must be run inside a git repository", "error");
 		return;
 	}
-	await openWorkspaceTarget(pi, ctx, repo, repo.cwd, "terminal");
+	await openWorkspaceTarget(pi, ctx, repo, currentWorkspaceRoot(repo), "terminal");
 }
 
 export async function openWorkspaceTarget(
@@ -46,7 +47,8 @@ export async function openWorkspaceTarget(
 		? renderOpenCommand(configuredCommand, cwd)
 		: await resolveFallbackOpenCommand(pi, target, cwd);
 	if (!command) {
-		ctx.ui.notify(
+		reportMessage(
+			ctx,
 			[
 				`Could not determine a ${target} command for this machine.`,
 				`Configure wt.${target}Command in .pi/settings.json.`,
@@ -61,7 +63,8 @@ export async function openWorkspaceTarget(
 	try {
 		const result = await execShell(pi, command, cwd);
 		if (result.code !== 0) {
-			ctx.ui.notify(
+			reportMessage(
+				ctx,
 				[
 					`Failed to open ${target}.`,
 					result.stderr.trim() || result.stdout.trim() || `Command exited with code ${result.code}.`,
@@ -71,11 +74,15 @@ export async function openWorkspaceTarget(
 			return false;
 		}
 
-		ctx.ui.notify(`Opened worktree in ${target}.`, "info");
+		reportMessage(ctx, `Opened worktree in ${target}.`, "info");
 		return true;
 	} finally {
 		ctx.ui.setStatus("pi-wt", undefined);
 	}
+}
+
+function currentWorkspaceRoot(repo: RepoState): string {
+	return repo.worktrees.find((worktree) => worktree.isCurrent)?.path ?? repo.cwd;
 }
 
 export async function launchWorktreeInNewTab(
@@ -94,7 +101,8 @@ export async function launchWorktreeInNewTab(
 		? renderLaunchCommand(settings.newWorktreeTabCommand, cwd, launchCommand)
 		: await resolveTerminalLaunchCommand(pi, cwd, launchCommand);
 	if (!command) {
-		ctx.ui.notify(
+		reportMessage(
+			ctx,
 			[
 				"Could not determine how to open a new tab for a new worktree and start pi.",
 				"Configure wt.newWorktreeTabCommand in .pi/settings.json.",
@@ -109,7 +117,8 @@ export async function launchWorktreeInNewTab(
 	try {
 		const result = await execShell(pi, command, cwd);
 		if (result.code !== 0) {
-			ctx.ui.notify(
+			reportMessage(
+				ctx,
 				[
 					"Failed to open a new tab for the new worktree.",
 					result.stderr.trim() || result.stdout.trim() || `Command exited with code ${result.code}.`,
@@ -119,7 +128,7 @@ export async function launchWorktreeInNewTab(
 			return false;
 		}
 
-		ctx.ui.notify("Launched pi in a new terminal for the new worktree.", "info");
+		reportMessage(ctx, "Launched pi in a new terminal for the new worktree.", "info");
 		return true;
 	} finally {
 		ctx.ui.setStatus("pi-wt", undefined);

@@ -6,8 +6,8 @@ import { handleRebaseCommand } from "./commands/rebase.js";
 import { handleStatusCommand } from "./commands/status.js";
 import { handleWorkspaceCommand } from "./commands/workspace.js";
 import { refreshWorktreeStateStatus } from "./git.js";
-import { toErrorMessage } from "./shared.js";
-import { DEFAULT_WORKTREE_ROOT, WORKTREE_ROOT_FLAG, WT_SETUP_FLAG } from "./types.js";
+import { reportMessage, toErrorMessage } from "./shared.js";
+import { DEFAULT_WORKTREE_ROOT, WORKTREE_ROOT_FLAG, WT_SETUP_FLAG, WT_STATE_STATUS_KEY } from "./types.js";
 
 const WORKTREE_STATE_POLL_INTERVAL_MS = 5000;
 
@@ -35,7 +35,10 @@ export default function (pi: ExtensionAPI) {
 		stopWorktreeStatePolling();
 		if (!ctx.hasUI) return;
 		worktreeStatePollTimer = setInterval(() => {
-			void refreshWorktreeState(ctx);
+			void refreshWorktreeState(ctx).catch((error) => {
+				ctx.ui.setStatus(WT_STATE_STATUS_KEY, undefined);
+				console.error(`[pi-wt] Failed to refresh worktree state: ${toErrorMessage(error)}`);
+			});
 		}, WORKTREE_STATE_POLL_INTERVAL_MS);
 	};
 	pi.registerFlag(WORKTREE_ROOT_FLAG, {
@@ -70,11 +73,12 @@ export default function (pi: ExtensionAPI) {
 		getArgumentCompletions: (prefix) => getWtArgumentCompletions(prefix),
 		handler: async (args, ctx) => {
 			try {
-				if (!ctx.hasUI) {
-					throw new Error("/wt requires a UI-capable mode");
+				const command = parseWtCommand(args);
+				if (!ctx.hasUI && ["workspace", "rebase", "pr"].includes(command.kind)) {
+					const commandLabel = command.kind === "workspace" ? "/wt" : `/wt ${command.kind}`;
+					throw new Error(`${commandLabel} requires a UI-capable mode`);
 				}
 
-				const command = parseWtCommand(args);
 				switch (command.kind) {
 					case "workspace":
 						await handleWorkspaceCommand(pi, ctx);
@@ -95,7 +99,7 @@ export default function (pi: ExtensionAPI) {
 						await handleTerminalCommand(pi, ctx);
 						return;
 					case "help":
-						ctx.ui.notify(wtUsageText(), "info");
+						reportMessage(ctx, wtUsageText(), "info");
 						return;
 				}
 			} catch (error) {

@@ -1,11 +1,12 @@
 import type { ExtensionAPI, ExtensionCommandContext } from "@mariozechner/pi-coding-agent";
 import { detectBaseBranch, formatPrState, inspectRepo, normalizeBranchName, readCurrentPr } from "../git.js";
+import { reportMessage } from "../shared.js";
 import { describeCurrentWorkspace } from "../worktrees.js";
 
 export async function handleStatusCommand(pi: ExtensionAPI, ctx: ExtensionCommandContext): Promise<void> {
 	const repo = await inspectRepo(pi, ctx.cwd);
 	if (!repo) {
-		ctx.ui.notify("/wt must be run inside a git repository", "error");
+		reportMessage(ctx, "/wt must be run inside a git repository", "error");
 		return;
 	}
 
@@ -33,5 +34,5 @@ export async function handleStatusCommand(pi: ExtensionAPI, ctx: ExtensionComman
 				]),
 	];
 
-	ctx.ui.notify(lines.join("\n"), "info");
+	reportMessage(ctx, lines.join("\n"), "info");
 }

@@ -1,4 +1,4 @@
-import { basename, dirname, isAbsolute, resolve } from "node:path";
+import { basename, dirname, isAbsolute, resolve, sep } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
 import { safeRealpath } from "./shared.js";
 import {
@@ -121,7 +121,7 @@ function parseWorktrees(output: string, currentCwd: string, mainCheckoutPath: st
 				detached,
 				locked,
 				prunable,
-				isCurrent: resolvedPath === currentReal,
+				isCurrent: pathContains(resolvedPath, currentReal),
 				isMainCheckout: resolvedPath === mainReal,
 			} satisfies WorktreeInfo;
 		})
@@ -492,6 +492,10 @@ function workspaceBranchLabel(worktree: WorktreeInfo): string {
 
 function shortHead(head: string | null): string | null {
 	return head ? head.slice(0, 8) : null;
+}
+
+function pathContains(parentPath: string, path: string): boolean {
+	return path === parentPath || path.startsWith(`${parentPath}${sep}`);
 }
 
 export async function exec(pi: ExtensionAPI, command: string, args: string[], cwd: string): Promise<ExecResult> {

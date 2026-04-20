@@ -29,7 +29,7 @@ export async function generatePullRequestDraft(
 		return null;
 	}
 
-	const promptTemplate = await readPullRequestPromptTemplate(repo.repoRoot);
+	const promptTemplate = await readPullRequestPromptTemplate(repo.mainCheckoutPath);
 	const prompt = await buildPullRequestPrompt(pi, repo, baseBranch, promptTemplate.template);
 	const userMessage: UserMessage = {
 		role: "user",

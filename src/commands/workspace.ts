@@ -38,7 +38,8 @@ export async function handleWorkspaceCommand(pi: ExtensionAPI, ctx: ExtensionCom
 		}
 
 		if (menuChoice.type === "archive-worktree") {
-			const archivingCurrentWorktree = menuChoice.worktreePath === repo.cwd;
+			const currentWorktreePath = repo.worktrees.find((worktree) => worktree.isCurrent)?.path;
+			const archivingCurrentWorktree = menuChoice.worktreePath === currentWorktreePath;
 			if (menuChoice.worktreePath) {
 				await archiveWorktreeAtPathFlow(pi, ctx, repo, worktreeRoot, menuChoice.worktreePath);
 			}
@@ -107,8 +108,9 @@ export async function handleWorkspaceCommand(pi: ExtensionAPI, ctx: ExtensionCom
 
 function shouldContinueSessionForNewWorktree(ctx: ExtensionCommandContext, repo: RepoState): boolean {
 	const hasSessionHistory = ctx.sessionManager.getEntries().length > 0;
+	const currentWorktree = repo.worktrees.find((worktree) => worktree.isCurrent);
 	const isStartingFromMain =
-		repo.cwd === repo.mainCheckoutPath ||
+		currentWorktree?.isMainCheckout === true ||
 		(repo.currentBranch !== null && repo.defaultBranch !== null && repo.currentBranch === repo.defaultBranch);
 	return hasSessionHistory && isStartingFromMain;
 }

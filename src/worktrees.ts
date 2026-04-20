@@ -1,6 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
-import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { ExtensionAPI, ExtensionCommandContext } from "@mariozechner/pi-coding-agent";
 import { DynamicBorder } from "@mariozechner/pi-coding-agent";
 import { Container, matchesKey, type SelectItem, SelectList, Text } from "@mariozechner/pi-tui";
@@ -899,7 +899,7 @@ function resolveWorktreeRoot(mainCheckoutPath: string, worktreeRoot: string): st
 function isSubpathOf(path: string, parentPath: string): boolean {
 	const normalizedPath = safeRealpath(path);
 	const normalizedParent = safeRealpath(parentPath);
-	return normalizedPath === normalizedParent || normalizedPath.startsWith(`${normalizedParent}/`);
+	return normalizedPath === normalizedParent || normalizedPath.startsWith(`${normalizedParent}${sep}`);
 }
 
 function sanitizeBranchForPath(branch: string): string {

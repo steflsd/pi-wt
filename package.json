@@ -33,14 +33,15 @@
 		]
 	},
 	"peerDependencies": {
-		"@mariozechner/pi-coding-agent": "*"
-	},
-	"dependencies": {
-		"@mariozechner/pi-ai": "*"
+		"@mariozechner/pi-ai": "*",
+		"@mariozechner/pi-coding-agent": "*",
+		"@mariozechner/pi-tui": "*"
 	},
 	"devDependencies": {
 		"@biomejs/biome": "2.4.12",
+		"@mariozechner/pi-ai": "*",
 		"@mariozechner/pi-coding-agent": "*",
+		"@mariozechner/pi-tui": "*",
 		"@types/node": "^25.6.0",
 		"typescript": "^6.0.3"
 	},
