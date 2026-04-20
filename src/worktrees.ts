@@ -497,10 +497,11 @@ async function chooseBaseBranch(
 		return preferred;
 	}
 
-	const recentBranches = branches.slice(0, Math.max(1, branchPickerLimit));
+	const prioritizedBranches = prioritizeBaseBranchesForPicker(branches);
+	const recentBranches = prioritizedBranches.slice(0, Math.max(1, branchPickerLimit));
 	const labels = recentBranches.map((branch) => formatBaseBranchOption(branch));
 	const byLabel = new Map(labels.map((label, index) => [label, recentBranches[index]]));
-	const hasMoreBranches = branches.length > recentBranches.length;
+	const hasMoreBranches = prioritizedBranches.length > recentBranches.length;
 	if (hasMoreBranches) {
 		labels.push(OTHER_BASE_BRANCH_LABEL);
 	}
@@ -864,6 +865,26 @@ function formatWorktreeTemplateOption(template: WorktreeTemplate): string {
 		.filter(Boolean)
 		.join(" · ");
 	return `${template.name}\n  ${details}`;
+}
+
+function prioritizeBaseBranchesForPicker(branches: BranchInfo[]): BranchInfo[] {
+	return branches
+		.map((branch, index) => ({ branch, index }))
+		.sort((left, right) => compareBaseBranchPriority(left.branch, right.branch) || left.index - right.index)
+		.map(({ branch }) => branch);
+}
+
+function compareBaseBranchPriority(left: BranchInfo, right: BranchInfo): number {
+	return baseBranchPriority(left) - baseBranchPriority(right);
+}
+
+function baseBranchPriority(branch: BranchInfo): number {
+	if (branch.isDefault) return 0;
+
+	const normalized = normalizeBranchName(branch.name);
+	if (normalized === "main" || normalized === "master") return 1;
+	if (branch.isCurrent) return 2;
+	return 3;
 }
 
 function formatBaseBranchOption(branch: BranchInfo): string {
