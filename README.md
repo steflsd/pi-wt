@@ -64,7 +64,9 @@ After creation, `pi-wt` also stores the chosen base branch in git config:
 git config branch.<new-branch>.wt-parent <base-branch>
 ```
 
-If you choose to move local changes, `pi-wt` stashes the current worktree's tracked + untracked changes, applies them in the new worktree, and removes the stash entry only after a successful apply.
+If you choose to move local changes, `pi-wt` stashes the current worktree's tracked + untracked changes, applies them in the new worktree, and removes the stash entry only after worktree creation succeeds end-to-end.
+
+If a later step fails after `git worktree add` (for example applying moved changes or running setup), `pi-wt` best-effort rolls back the new worktree and branch and restores the original stash to the source worktree.
 
 If the repo's main checkout contains a shared setup script at:
 

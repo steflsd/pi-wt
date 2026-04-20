@@ -270,6 +270,16 @@ export async function writeGitConfig(pi: ExtensionAPI, cwd: string, key: string,
 	}
 }
 
+export async function unsetGitConfig(pi: ExtensionAPI, cwd: string, key: string): Promise<boolean> {
+	const result = await exec(pi, "git", ["config", "--unset-all", key], cwd);
+	if (result.code === 0) {
+		return true;
+	}
+
+	const stderr = result.stderr.trim();
+	return result.code === 5 || stderr.includes("No such section or key");
+}
+
 export async function refreshWorktreeStateStatus(
 	pi: ExtensionAPI,
 	ctx: ExtensionContext,

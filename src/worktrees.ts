@@ -11,6 +11,7 @@ import {
 	normalizeBranchName,
 	readGitConfig,
 	readWorktreeChanges,
+	unsetGitConfig,
 	writeGitConfig,
 } from "./git.js";
 import { switchToLatestOrCreateSession } from "./sessions.js";
@@ -210,6 +211,7 @@ export async function createWorktreeFlow(
 	}
 
 	let stashedChanges: StashedWorktreeChanges | null = null;
+	let createdWorktree = false;
 	let restoreStashToSource = false;
 	try {
 		if (createMode.mode === "move-current-changes") {
@@ -231,6 +233,7 @@ export async function createWorktreeFlow(
 		if (created.code !== 0) {
 			throw new Error(created.stderr.trim() || `Failed to create worktree ${targetPath}`);
 		}
+		createdWorktree = true;
 
 		await writeGitConfig(pi, targetPath, `branch.${newBranchName}.wt-parent`, baseBranch.name);
 
@@ -239,23 +242,12 @@ export async function createWorktreeFlow(
 			try {
 				const applied = await exec(pi, "git", ["stash", "apply", "--index", stashedChanges.oid], targetPath);
 				if (applied.code !== 0) {
-					restoreStashToSource = false;
 					throw new Error(
-						(applied.stderr.trim() || applied.stdout.trim() || `Failed to apply moved changes in ${targetPath}`) +
-							"\n\nThe new worktree was created. The stash entry was kept so you can apply or inspect it manually.",
+						applied.stderr.trim() || applied.stdout.trim() || `Failed to apply moved changes in ${targetPath}`,
 					);
 				}
 			} finally {
 				ctx.ui.setStatus("pi-wt", undefined);
-			}
-
-			restoreStashToSource = false;
-			const dropped = await dropStashByOid(pi, repo.mainCheckoutPath, stashedChanges.oid);
-			if (!dropped) {
-				ctx.ui.notify(
-					`Moved ${stashedChanges.changeCount} local change(s) into ${newBranchName}, but left the stash entry behind.`,
-					"warning",
-				);
 			}
 		}
 
@@ -271,30 +263,70 @@ export async function createWorktreeFlow(
 				ctx.ui.setStatus("pi-wt", undefined);
 			}
 		}
+
+		if (stashedChanges) {
+			restoreStashToSource = false;
+			const dropped = await dropStashByOid(pi, repo.mainCheckoutPath, stashedChanges.oid);
+			if (!dropped) {
+				ctx.ui.notify(
+					`Moved ${stashedChanges.changeCount} local change(s) into ${newBranchName}, but left the stash entry behind.`,
+					"warning",
+				);
+			}
+		}
 	} catch (error) {
+		const rollbackIssues: string[] = [];
+		const rollbackNotes: string[] = [];
+
+		if (createdWorktree) {
+			ctx.ui.setStatus("pi-wt", `Rolling back failed worktree creation for ${newBranchName}...`);
+			try {
+				const worktreeRollbackIssues = await rollbackCreatedWorktree(
+					pi,
+					repo.mainCheckoutPath,
+					targetPath,
+					newBranchName,
+				);
+				if (worktreeRollbackIssues.length === 0) {
+					rollbackNotes.push(`removed ${newBranchName} worktree + branch`);
+				} else {
+					rollbackIssues.push(...worktreeRollbackIssues);
+				}
+			} finally {
+				ctx.ui.setStatus("pi-wt", undefined);
+			}
+		}
+
 		if (stashedChanges && restoreStashToSource) {
 			ctx.ui.setStatus("pi-wt", "Restoring moved changes...");
 			try {
 				const restored = await exec(pi, "git", ["stash", "apply", "--index", stashedChanges.oid], repo.cwd);
 				if (restored.code === 0) {
+					rollbackNotes.push(`restored original local changes in ${repo.cwd}`);
 					const dropped = await dropStashByOid(pi, repo.mainCheckoutPath, stashedChanges.oid);
 					if (!dropped) {
 						ctx.ui.notify("Restored local changes, but left the stash entry behind.", "warning");
 					}
 				} else {
-					throw new Error(
-						restored.stderr.trim() ||
-							restored.stdout.trim() ||
-							"Failed to restore stashed changes in the original worktree",
+					rollbackIssues.push(
+						`failed to restore the stashed changes in ${repo.cwd}: ${
+							restored.stderr.trim() || restored.stdout.trim() || "unknown git stash apply error"
+						}`,
 					);
 				}
-			} catch (restoreError) {
-				throw new Error(
-					`${toErrorMessage(error)}\n\nAlso failed to restore the stashed changes in ${repo.cwd}: ${toErrorMessage(restoreError)}`,
-				);
 			} finally {
 				ctx.ui.setStatus("pi-wt", undefined);
 			}
+		}
+
+		if (rollbackIssues.length > 0) {
+			const rollbackSummary = rollbackNotes.length > 0 ? `\nSucceeded:\n- ${rollbackNotes.join("\n- ")}` : "";
+			throw new Error(
+				`${toErrorMessage(error)}\n\nRollback incomplete:${rollbackSummary}\nFailed:\n- ${rollbackIssues.join("\n- ")}`,
+			);
+		}
+		if (rollbackNotes.length > 0) {
+			throw new Error(`${toErrorMessage(error)}\n\nRollback succeeded:\n- ${rollbackNotes.join("\n- ")}`);
 		}
 		throw error;
 	}
@@ -536,6 +568,35 @@ async function chooseCreateWorktreeMode(
 		mode: selected === moveLabel ? "move-current-changes" : "clean",
 		changeCount: currentChanges.length,
 	};
+}
+
+async function rollbackCreatedWorktree(
+	pi: ExtensionAPI,
+	mainCheckoutPath: string,
+	targetPath: string,
+	branchName: string,
+): Promise<string[]> {
+	const issues: string[] = [];
+	const removed = await exec(pi, "git", ["worktree", "remove", "--force", targetPath], mainCheckoutPath);
+	if (removed.code !== 0) {
+		issues.push(removed.stderr.trim() || removed.stdout.trim() || `failed to remove worktree ${targetPath}`);
+		return issues;
+	}
+
+	const deletedBranch = await exec(pi, "git", ["branch", "-D", branchName], mainCheckoutPath);
+	if (deletedBranch.code !== 0) {
+		issues.push(
+			deletedBranch.stderr.trim() || deletedBranch.stdout.trim() || `failed to delete branch ${branchName}`,
+		);
+		return issues;
+	}
+
+	const removedConfig = await unsetGitConfig(pi, mainCheckoutPath, `branch.${branchName}.wt-parent`);
+	if (!removedConfig) {
+		issues.push(`failed to remove git config branch.${branchName}.wt-parent`);
+	}
+
+	return issues;
 }
 
 async function stashCurrentChangesForNewWorktree(
