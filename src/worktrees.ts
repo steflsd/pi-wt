@@ -67,7 +67,7 @@ export function getConfiguredSetupStep(pi: ExtensionAPI, repo: RepoState): Setup
 	if (existsSync(projectScriptPath)) {
 		return {
 			label: projectScriptPath,
-			command: `bash ${quoteShellArg(`./${WORKTREE_SETUP_SCRIPT}`)}`,
+			command: `bash ${quoteShellArg(projectScriptPath)}`,
 		};
 	}
 

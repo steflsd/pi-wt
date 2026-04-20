@@ -66,13 +66,13 @@ git config branch.<new-branch>.wt-parent <base-branch>
 
 If you choose to move local changes, `pi-wt` stashes the current worktree's tracked + untracked changes, applies them in the new worktree, and removes the stash entry only after a successful apply.
 
-If the repo contains a shared setup script at:
+If the repo's main checkout contains a shared setup script at:
 
 ```text
 .pi/wt/setup.sh
 ```
 
-`pi-wt` runs it inside the new worktree before switching sessions.
+`pi-wt` runs that script with the new worktree as its working directory before switching sessions.
 
 A typical example is:
 
@@ -131,7 +131,7 @@ This extension uses pi's standard project-local `.pi/` directory.
 
 Shared project setup:
 
-- `.pi/wt/setup.sh` — optional repo-local setup script run inside newly created worktrees
+- `.pi/wt/setup.sh` — optional repo-local setup script read from the repo's main checkout and executed with newly created worktrees as the working directory
 - `.pi/wt/pr.md` — optional repo-local prompt override for `/wt pr` title/body drafting
 - `.pi/settings.json` — optional project-local worktree templates and open commands
 
@@ -168,7 +168,7 @@ For opening a newly created worktree in a new tab, `wt.newWorktreeTabCommand` ca
 CLI flags:
 
 - `--wt-root` — base directory for newly created worktrees; actual paths are `<wt-root>/<repo-name>/<branch-name>`
-- `--wt-setup` — optional fallback shell command to run when `.pi/wt/setup.sh` is not present
+- `--wt-setup` — optional fallback shell command to run when the main checkout does not contain `.pi/wt/setup.sh`
 
 Examples:
 
@@ -190,7 +190,7 @@ Relative `--wt-root` values are resolved from the repo's main checkout.
 - Only shows existing worktrees under the configured worktree root
 - By default, `/wt` lets you choose a session in the selected workspace
 - Creating a new worktree starts `pi` in that worktree; when creating from the main/default branch with existing session history, `/wt` carries the current session across automatically
-- `.pi/wt/setup.sh` takes precedence over `--wt-setup`
+- The main checkout's `.pi/wt/setup.sh` takes precedence over `--wt-setup`
 - `/wt pr` requires the GitHub CLI (`gh`)
 - `/wt pr` will push the current branch first when needed so `gh pr create` can run non-interactively
 - `/wt pr` uses the active model to draft the PR title/body from `.pi/wt/pr.md` when available, and falls back to `gh pr create --fill` if drafting fails or no model is selected
