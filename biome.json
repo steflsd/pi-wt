@@ -26,6 +26,8 @@
 	"files": {
 		"includes": [
 			"src/**/*.ts",
+			"tests/**/*.ts",
+			"vitest.config.ts",
 			"package.json",
 			"tsconfig.json",
 			"biome.json",

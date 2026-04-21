@@ -1,4 +1,5 @@
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
+import { buildWorktreeSystemPromptContext } from "./branch-facts.js";
 import { getWtArgumentCompletions, parseWtCommand, wtUsageText } from "./command-spec.js";
 import { handleLandCommand } from "./commands/land.js";
 import { handleEditorCommand, handleTerminalCommand } from "./commands/open.js";
@@ -67,6 +68,20 @@ export default function (pi: ExtensionAPI) {
 	});
 	pi.on("user_bash", async (event, ctx) => {
 		await refreshWorktreeState(ctx, event.cwd);
+	});
+	pi.on("before_agent_start", async (event, ctx) => {
+		const worktreeContext = await buildWorktreeSystemPromptContext(
+			pi,
+			event.systemPromptOptions?.cwd ?? ctx.cwd,
+			event.prompt,
+		);
+		if (!worktreeContext) {
+			return undefined;
+		}
+
+		return {
+			systemPrompt: `${event.systemPrompt}\n\n${worktreeContext}`,
+		};
 	});
 
 	pi.registerCommand("wt", {

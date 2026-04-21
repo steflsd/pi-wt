@@ -39,17 +39,20 @@
 	},
 	"devDependencies": {
 		"@biomejs/biome": "2.4.12",
-		"@mariozechner/pi-ai": "*",
-		"@mariozechner/pi-coding-agent": "*",
-		"@mariozechner/pi-tui": "*",
+		"@mariozechner/pi-ai": "^0.68.0",
+		"@mariozechner/pi-coding-agent": "^0.68.0",
+		"@mariozechner/pi-tui": "^0.68.0",
 		"@types/node": "^25.6.0",
-		"typescript": "^6.0.3"
+		"typescript": "^6.0.3",
+		"vitest": "^4.1.4"
 	},
 	"scripts": {
 		"format": "biome check --write .",
 		"lint": "biome check --error-on-warnings .",
 		"typecheck": "tsc --noEmit",
-		"check": "biome check --write --error-on-warnings . && pnpm run typecheck",
+		"test": "vitest run",
+		"test:watch": "vitest",
+		"check": "biome check --write --error-on-warnings . && pnpm run typecheck && pnpm run test",
 		"update": "pnpm up -i -L",
 		"prepublishOnly": "pnpm run check"
 	}

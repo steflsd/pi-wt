@@ -10,6 +10,22 @@ After code changes, run:
 - `pnpm run format`
 - `pnpm run lint`
 - `pnpm run typecheck`
+- `pnpm run test`
+
+## Testing
+- Use Vitest v4
+- Test public behavior and observable outcomes, not implementation details
+- Prefer the lightest mocking tool: use `vi.spyOn` before `vi.mock`
+- Do not mock entire modules unless necessary
+- Keep tests isolated; do not rely on mock or timer state leaking between tests
+- Preserve type safety for mocks; prefer `vi.mocked(...)` and avoid `any` casts
+- Structure tests as Arrange / Act / Assert
+- Always `await` Promise-returning functions and async assertions
+- If using fake timers, explicitly advance them and restore real timers after each test
+- Prefer meaningful behavioral tests over tests written only for coverage
+- Default Vitest config should enable:
+  - `mockReset: true`
+  - `restoreMocks: true`
 
 ## Project structure
 - Keep `src/index.ts` thin

@@ -3,6 +3,8 @@ import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import {
 	detectBaseBranch,
 	exec,
+	hasGhCli,
+	inspectRepo,
 	isBranchMergedInto,
 	normalizeBranchName,
 	readCurrentPr,
@@ -97,6 +99,106 @@ export async function inspectBranchFacts(
 		mergeTarget,
 		mergedIntoTarget,
 	};
+}
+
+export async function buildWorktreeSystemPromptContext(
+	pi: ExtensionAPI,
+	cwd: string,
+	prompt: string,
+): Promise<string | null> {
+	const repo = await inspectRepo(pi, cwd);
+	if (!repo) {
+		return null;
+	}
+
+	const currentWorktree = repo.worktrees.find((worktree) => worktree.isCurrent) ?? null;
+	const facts = repo.currentBranch ? await inspectCurrentBranchFacts(pi, repo, { includePullRequest: false }) : null;
+	const isLinkedWorktree = currentWorktree !== null && !currentWorktree.isMainCheckout;
+	const hasFeatureBranchContext = Boolean(facts?.branch && !facts.isDefaultBranch && facts.baseBranch);
+	const canLandCurrentBranch = Boolean(
+		facts?.branch && !facts.isDetached && !facts.isDefaultBranch && facts.baseBranch,
+	);
+	if (!isLinkedWorktree && !hasFeatureBranchContext) {
+		return null;
+	}
+
+	const lines = ["## pi-wt context"];
+	if (isLinkedWorktree && currentWorktree) {
+		lines.push(`- Linked worktree: \`${currentWorktree.path}\` on \`${facts?.branch ?? "(detached HEAD)"}\`.`);
+		lines.push(
+			"- Do not treat this worktree path as the repo's main checkout when reasoning about Git or file operations.",
+		);
+	} else if (facts?.branch) {
+		lines.push(`- Current branch: \`${facts.branch}\` in the main checkout.`);
+	} else if (facts?.isDetached) {
+		lines.push("- Current branch: detached HEAD in the main checkout.");
+	}
+
+	if (facts?.baseBranch && !facts.isDefaultBranch) {
+		lines.push(`- Base branch: \`${facts.baseBranch.name}\` (${facts.baseBranch.source}).`);
+	}
+
+	const suggestedCommands = await suggestWtCommands(
+		pi,
+		cwd,
+		prompt,
+		Boolean(facts?.baseBranch && !facts.isDefaultBranch),
+		canLandCurrentBranch,
+	);
+	if (suggestedCommands.length > 0) {
+		lines.push(`- Prefer ${formatCommandList(suggestedCommands)} when relevant.`);
+	}
+
+	return lines.join("\n");
+}
+
+async function suggestWtCommands(
+	pi: ExtensionAPI,
+	cwd: string,
+	prompt: string,
+	hasBaseBranch: boolean,
+	canLandCurrentBranch: boolean,
+): Promise<string[]> {
+	const lowerPrompt = prompt.toLowerCase();
+	const commands = new Set<string>();
+
+	if (
+		/\bworktree\b/.test(lowerPrompt) ||
+		/\bworkspace\b/.test(lowerPrompt) ||
+		/\bstatus\b/.test(lowerPrompt) ||
+		/\bbranch\b/.test(lowerPrompt) ||
+		/\bbase branch\b/.test(lowerPrompt)
+	) {
+		commands.add("/wt status");
+	}
+	if (
+		hasBaseBranch &&
+		(/\brebase\b/.test(lowerPrompt) || /\bsync\b/.test(lowerPrompt) || /\bupdate\b/.test(lowerPrompt))
+	) {
+		commands.add("/wt rebase");
+	}
+	if (
+		canLandCurrentBranch &&
+		(/\bland\b/.test(lowerPrompt) || /\bmerge\b/.test(lowerPrompt) || /\bintegrate\b/.test(lowerPrompt))
+	) {
+		commands.add("/wt land");
+	}
+	if (
+		(/\bpr\b/.test(lowerPrompt) || /\bpull request\b/.test(lowerPrompt) || /\bgithub\b/.test(lowerPrompt)) &&
+		(await hasGhCli(pi, cwd))
+	) {
+		commands.add("/wt pr");
+	}
+
+	if (commands.size === 0) {
+		commands.add("/wt status");
+	}
+
+	return [...commands];
+}
+
+function formatCommandList(commands: string[]): string {
+	return commands.map((command) => `\`${command}\``).join(", ");
 }
 
 export function resolveWorktreeByPath(repo: RepoState, worktreePath: string): WorktreeInfo | undefined {
