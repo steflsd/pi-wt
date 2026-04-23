@@ -4,11 +4,13 @@ import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "nod
 import type { ExtensionAPI, ExtensionCommandContext } from "@mariozechner/pi-coding-agent";
 import { DynamicBorder } from "@mariozechner/pi-coding-agent";
 import { Container, matchesKey, type SelectItem, SelectList, Text } from "@mariozechner/pi-tui";
+import { hasMergedPullRequestAtHead } from "./branch-facts.js";
 import {
 	exec,
 	execShell,
 	isBranchMergedInto,
 	normalizeBranchName,
+	readCurrentPr,
 	readGitConfig,
 	readWorktreeChanges,
 	unsetGitConfig,
@@ -829,21 +831,75 @@ async function listArchiveCandidates(
 				? await readGitConfig(pi, repo.mainCheckoutPath, `branch.${branch}.wt-parent`)
 				: null;
 			const mergeTarget = branch ? (configuredTarget ?? repo.defaultBranch) : null;
-			const mergeState =
-				branch && mergeTarget && normalizeBranchName(branch) !== normalizeBranchName(mergeTarget)
-					? ((await isBranchMergedInto(pi, repo.mainCheckoutPath, branch, mergeTarget)) ?? "unknown")
-					: "unknown";
+			const shouldCheckMerge = Boolean(
+				branch && mergeTarget && normalizeBranchName(branch) !== normalizeBranchName(mergeTarget),
+			);
+			const mergedIntoTarget = shouldCheckMerge
+				? await isBranchMergedInto(pi, repo.mainCheckoutPath, branch as string, mergeTarget as string)
+				: null;
+			const mergedPullRequestAtHead =
+				shouldCheckMerge && mergedIntoTarget !== true
+					? await hasMergedArchivePullRequest(pi, worktree.path, mergeTarget as string)
+					: false;
+			const mergeAssessment = resolveArchiveMergeAssessment({
+				branch,
+				mergeTarget,
+				mergedIntoTarget,
+				mergedPullRequestAtHead,
+			});
 			const changes = await readWorktreeChanges(pi, worktree.path, true);
 			return {
 				worktree,
 				pathLabel: relative(resolvedWorktreeRoot, worktree.path) || basename(worktree.path),
 				changes,
-				deleteBranch: Boolean(branch && mergeTarget && mergeState === true),
+				deleteBranch: mergeAssessment.deleteBranch,
 				mergeTarget: mergeTarget ? normalizeBranchName(mergeTarget) : null,
-				mergeState: mergeState === true ? "merged" : mergeState === false ? "not-merged" : "unknown",
+				mergeState: mergeAssessment.mergeState,
 			} satisfies ArchiveCandidate;
 		}),
 	);
+}
+
+export function resolveArchiveMergeAssessment({
+	branch,
+	mergeTarget,
+	mergedIntoTarget,
+	mergedPullRequestAtHead,
+}: {
+	branch: string | null;
+	mergeTarget: string | null;
+	mergedIntoTarget: boolean | null;
+	mergedPullRequestAtHead: boolean;
+}): Pick<ArchiveCandidate, "deleteBranch" | "mergeState"> {
+	if (!branch || !mergeTarget || normalizeBranchName(branch) === normalizeBranchName(mergeTarget)) {
+		return { deleteBranch: false, mergeState: "unknown" };
+	}
+	if (mergedIntoTarget === true || mergedPullRequestAtHead) {
+		return { deleteBranch: true, mergeState: "merged" };
+	}
+	if (mergedIntoTarget === false) {
+		return { deleteBranch: false, mergeState: "not-merged" };
+	}
+	return { deleteBranch: false, mergeState: "unknown" };
+}
+
+async function hasMergedArchivePullRequest(pi: ExtensionAPI, cwd: string, mergeTarget: string): Promise<boolean> {
+	const [pullRequest, currentHead] = await Promise.all([readCurrentPr(pi, cwd), readArchiveHead(pi, cwd)]);
+	return hasMergedPullRequestAtHead({
+		pullRequest,
+		currentHead,
+		baseBranch: {
+			name: normalizeBranchName(mergeTarget),
+			ref: mergeTarget,
+			source: "archive target",
+		},
+	});
+}
+
+async function readArchiveHead(pi: ExtensionAPI, cwd: string): Promise<string | null> {
+	const result = await exec(pi, "git", ["rev-parse", "HEAD"], cwd);
+	const head = result.stdout.trim();
+	return result.code === 0 && head ? head : null;
 }
 
 function formatWorkspaceDescription(worktree: WorktreeInfo, worktreeRoot?: string): string {

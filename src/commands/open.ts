@@ -1,7 +1,7 @@
 import type { ExtensionAPI, ExtensionCommandContext } from "@mariozechner/pi-coding-agent";
 import { execShell, inspectRepo } from "../git.js";
 import { reportMessage } from "../shared.js";
-import type { RepoState } from "../types.js";
+import type { ExecResult, RepoState } from "../types.js";
 import { readProjectWorktreeSettings } from "../worktrees.js";
 
 type OpenTarget = "editor" | "terminal";
@@ -43,10 +43,10 @@ export async function openWorkspaceTarget(
 ): Promise<boolean> {
 	const settings = readProjectWorktreeSettings(repo);
 	const configuredCommand = target === "editor" ? settings.editorCommand : settings.terminalCommand;
-	const command = configuredCommand
-		? renderOpenCommand(configuredCommand, cwd)
-		: await resolveFallbackOpenCommand(pi, target, cwd);
-	if (!command) {
+	const commands = configuredCommand
+		? [renderOpenCommand(configuredCommand, cwd)]
+		: resolveFallbackOpenCommands(target, cwd);
+	if (commands.length === 0) {
 		reportMessage(
 			ctx,
 			[
@@ -61,13 +61,15 @@ export async function openWorkspaceTarget(
 
 	ctx.ui.setStatus("pi-wt", `Opening ${target} for ${cwd}...`);
 	try {
-		const result = await execShell(pi, command, cwd);
-		if (result.code !== 0) {
+		const result = await tryCommands(pi, cwd, commands);
+		if (!result || result.code !== 0) {
 			reportMessage(
 				ctx,
 				[
 					`Failed to open ${target}.`,
-					result.stderr.trim() || result.stdout.trim() || `Command exited with code ${result.code}.`,
+					result?.stderr.trim() ||
+						result?.stdout.trim() ||
+						`Command exited with code ${result?.code ?? "unknown"}.`,
 				].join("\n\n"),
 				"error",
 			);
@@ -93,18 +95,15 @@ export async function launchWorktreeInNewTab(
 	options?: { sessionPath?: string },
 ): Promise<boolean> {
 	const settings = readProjectWorktreeSettings(repo);
-	const piCommand = await resolveLaunchCommand(pi, cwd, "pi");
-	const launchCommand = options?.sessionPath
-		? `${piCommand} --session ${quoteShellArg(options.sessionPath)}`
-		: piCommand;
-	const command = settings.newWorktreeTabCommand?.trim()
-		? renderLaunchCommand(settings.newWorktreeTabCommand, cwd, launchCommand)
-		: await resolveTerminalLaunchCommand(pi, cwd, launchCommand);
-	if (!command) {
+	const launchCommand = options?.sessionPath ? `pi --session ${quoteShellArg(options.sessionPath)}` : "pi";
+	const commands = settings.newWorktreeTabCommand?.trim()
+		? [renderLaunchCommand(settings.newWorktreeTabCommand, cwd, launchCommand)]
+		: resolveTerminalLaunchCommands(cwd, launchCommand);
+	if (commands.length === 0) {
 		reportMessage(
 			ctx,
 			[
-				"Could not determine how to open a new tab for a new worktree and start pi.",
+				"Could not determine how to open a new terminal for a new worktree and start pi.",
 				"Configure wt.newWorktreeTabCommand in .pi/settings.json.",
 				'Example: { "wt": { "newWorktreeTabCommand": "wezterm start --cwd {{path}} {{command}}" } }',
 			].join("\n"),
@@ -113,15 +112,17 @@ export async function launchWorktreeInNewTab(
 		return false;
 	}
 
-	ctx.ui.setStatus("pi-wt", `Opening new tab for ${cwd}...`);
+	ctx.ui.setStatus("pi-wt", `Opening new terminal for ${cwd}...`);
 	try {
-		const result = await execShell(pi, command, cwd);
-		if (result.code !== 0) {
+		const result = await tryCommands(pi, cwd, commands);
+		if (!result || result.code !== 0) {
 			reportMessage(
 				ctx,
 				[
-					"Failed to open a new tab for the new worktree.",
-					result.stderr.trim() || result.stdout.trim() || `Command exited with code ${result.code}.`,
+					"Failed to open a new terminal for the new worktree.",
+					result?.stderr.trim() ||
+						result?.stdout.trim() ||
+						`Command exited with code ${result?.code ?? "unknown"}.`,
 				].join("\n\n"),
 				"error",
 			);
@@ -158,58 +159,25 @@ function renderLaunchCommand(template: string, cwd: string, command: string): st
 	return `${renderedWithPath} ${command}`;
 }
 
-async function resolveFallbackOpenCommand(pi: ExtensionAPI, target: OpenTarget, cwd: string): Promise<string | null> {
+function resolveFallbackOpenCommands(target: OpenTarget, cwd: string): string[] {
 	if (target === "editor") {
 		const preferredEditor = process.env.VISUAL?.trim() || process.env.EDITOR?.trim();
 		if (preferredEditor) {
-			return renderOpenCommand(preferredEditor, cwd);
+			return [renderOpenCommand(preferredEditor, cwd)];
 		}
 	}
 
-	const termProgramCandidate = getTermProgramCandidate(target, process.platform, process.env.TERM_PROGRAM);
-	if (
-		termProgramCandidate &&
-		(!termProgramCandidate.probe || (await commandExists(pi, termProgramCandidate.probe, cwd)))
-	) {
-		return renderOpenCommand(termProgramCandidate.command, cwd);
-	}
-
-	const candidates = getFallbackCandidates(target, process.platform);
-	for (const candidate of candidates) {
-		if (!candidate.probe || (await commandExists(pi, candidate.probe, cwd))) {
-			return renderOpenCommand(candidate.command, cwd);
-		}
-	}
-
-	return null;
+	return uniqueCommands([
+		getTermProgramCandidate(target, process.platform, process.env.TERM_PROGRAM),
+		...getFallbackCandidates(target, process.platform),
+	]).map((candidate) => renderOpenCommand(candidate.command, cwd));
 }
 
-async function resolveTerminalLaunchCommand(
-	pi: ExtensionAPI,
-	cwd: string,
-	launchCommand: string,
-): Promise<string | null> {
-	const termProgramCandidate = getTerminalLaunchTermProgramCandidate(
-		process.platform,
-		process.env.TERM_PROGRAM,
-		cwd,
-		launchCommand,
-	);
-	if (
-		termProgramCandidate &&
-		(!termProgramCandidate.probe || (await commandExists(pi, termProgramCandidate.probe, cwd)))
-	) {
-		return termProgramCandidate.command;
-	}
-
-	const candidates = getTerminalLaunchFallbackCandidates(process.platform, cwd, launchCommand);
-	for (const candidate of candidates) {
-		if (!candidate.probe || (await commandExists(pi, candidate.probe, cwd))) {
-			return candidate.command;
-		}
-	}
-
-	return null;
+function resolveTerminalLaunchCommands(cwd: string, launchCommand: string): string[] {
+	return uniqueCommands([
+		getTerminalLaunchTermProgramCandidate(process.platform, process.env.TERM_PROGRAM, cwd, launchCommand),
+		...getTerminalLaunchFallbackCandidates(process.platform, cwd, launchCommand),
+	]).map((candidate) => candidate.command);
 }
 
 function getTermProgramCandidate(
@@ -233,7 +201,7 @@ function getTermProgramCandidate(
 		return { probe: "open", command: "open -a iTerm {{path}}" };
 	}
 	if (normalizedTermProgram === "ghostty") {
-		return { probe: "open", command: "open -a Ghostty {{path}}" };
+		return { probe: "osascript", command: buildGhosttyOpenCommand() };
 	}
 	if (normalizedTermProgram === "wezterm") {
 		return { probe: "wezterm", command: "wezterm start --cwd {{path}}" };
@@ -261,10 +229,7 @@ function getTerminalLaunchTermProgramCandidate(
 	}
 
 	if (normalizedTermProgram === "ghostty") {
-		return {
-			probe: "open",
-			command: `open -na Ghostty --args --working-directory=${quoteShellArg(cwd)} -e ${launchCommand}`,
-		};
+		return { probe: "osascript", command: buildGhosttyLaunchCommand(cwd, launchCommand) };
 	}
 	if (normalizedTermProgram === "wezterm") {
 		return { probe: "wezterm", command: `wezterm start --cwd ${quoteShellArg(cwd)} ${launchCommand}` };
@@ -299,7 +264,10 @@ function getFallbackCandidates(target: OpenTarget, platform: NodeJS.Platform): C
 	}
 
 	if (platform === "darwin") {
-		return [{ probe: "open", command: "open -a Terminal {{path}}" }];
+		return [
+			{ probe: "osascript", command: buildGhosttyOpenCommand() },
+			{ probe: "open", command: "open -a Terminal {{path}}" },
+		];
 	}
 	if (platform === "win32") {
 		return [{ probe: "wt", command: "wt -d {{path}}" }];
@@ -322,10 +290,7 @@ function getTerminalLaunchFallbackCandidates(
 ): LaunchCommandCandidate[] {
 	if (platform === "darwin") {
 		return [
-			{
-				probe: "open",
-				command: `open -na Ghostty --args --working-directory=${quoteShellArg(cwd)} -e ${launchCommand}`,
-			},
+			{ probe: "osascript", command: buildGhosttyLaunchCommand(cwd, launchCommand) },
 			{ probe: "wezterm", command: `wezterm start --cwd ${quoteShellArg(cwd)} ${launchCommand}` },
 		];
 	}
@@ -348,15 +313,74 @@ function getTerminalLaunchFallbackCandidates(
 	];
 }
 
-async function commandExists(pi: ExtensionAPI, command: string, cwd: string): Promise<boolean> {
-	const result = await execShell(pi, `command -v ${quoteShellArg(command)} >/dev/null 2>&1`, cwd);
-	return result.code === 0;
+async function tryCommands(pi: ExtensionAPI, cwd: string, commands: string[]): Promise<ExecResult | null> {
+	let lastResult: ExecResult | null = null;
+	for (const command of commands) {
+		lastResult = await execShell(pi, command, cwd);
+		if (lastResult.code === 0) {
+			return lastResult;
+		}
+	}
+	return lastResult;
 }
 
-async function resolveLaunchCommand(pi: ExtensionAPI, cwd: string, command: string): Promise<string> {
-	const result = await execShell(pi, `command -v ${quoteShellArg(command)}`, cwd);
-	const resolved = result.stdout.trim();
-	return result.code === 0 && resolved ? resolved : command;
+function uniqueCommands<T extends { command: string }>(candidates: Array<T | null | undefined>): T[] {
+	const seen = new Set<string>();
+	const result: T[] = [];
+	for (const candidate of candidates) {
+		if (!candidate || seen.has(candidate.command)) {
+			continue;
+		}
+		seen.add(candidate.command);
+		result.push(candidate);
+	}
+	return result;
+}
+
+export function buildGhosttyOpenScript(): string {
+	return buildGhosttySurfaceScript([], ["      set initial working directory to cwd"]);
+}
+
+function buildGhosttyOpenCommand(): string {
+	return buildOsaScriptCommand(["{{path}}"], buildGhosttyOpenScript());
+}
+
+export function buildGhosttyLaunchScript(): string {
+	return buildGhosttySurfaceScript(
+		["  set launchCommand to item 2 of argv"],
+		["      set initial working directory to cwd", "      set initial input to launchCommand & return"],
+	);
+}
+
+function buildGhosttyLaunchCommand(cwd: string, launchCommand: string): string {
+	return buildOsaScriptCommand([cwd, launchCommand], buildGhosttyLaunchScript());
+}
+
+function buildGhosttySurfaceScript(argvSetupLines: string[], configLines: string[]): string {
+	return [
+		"on run argv",
+		"  set cwd to item 1 of argv",
+		...argvSetupLines,
+		'  set ghosttyRunning to application "Ghostty" is running',
+		'  tell application "Ghostty"',
+		"    set cfg to new surface configuration",
+		"    tell cfg",
+		...configLines,
+		"    end tell",
+		"    if ghosttyRunning and (count of windows) > 0 then",
+		"      new tab in front window with configuration cfg",
+		"    else",
+		"      new window with configuration cfg",
+		"    end if",
+		"    activate",
+		"  end tell",
+		"end run",
+	].join("\n");
+}
+
+function buildOsaScriptCommand(args: string[], script: string): string {
+	const quotedArgs = args.map(quoteShellArg).join(" ");
+	return `osascript - ${quotedArgs} <<'APPLESCRIPT'\n${script}\nAPPLESCRIPT`;
 }
 
 function exampleCommand(target: OpenTarget): string {
