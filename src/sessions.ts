@@ -4,11 +4,7 @@ import { type ExtensionCommandContext, type SessionInfo, SessionManager } from "
 import { safeRealpath } from "./shared.js";
 import type { WorkspaceTarget } from "./types.js";
 
-type ReplacementSessionContext = ExtensionCommandContext;
-type SwitchSessionOptions = { withSession?: (ctx: ReplacementSessionContext) => Promise<void> };
-type SwitchSessionContext = ExtensionCommandContext & {
-	switchSession: (sessionPath: string, options?: SwitchSessionOptions) => Promise<{ cancelled: boolean }>;
-};
+type SwitchSessionOptions = Parameters<ExtensionCommandContext["switchSession"]>[1];
 
 export async function persistNewSessionHeader(sessionManager: SessionManager, sessionFile: string): Promise<void> {
 	const header = sessionManager.getHeader();
@@ -31,14 +27,6 @@ export async function listSessions(cwd: string): Promise<SessionInfo[]> {
 	}
 }
 
-export async function switchSessionCompat(
-	ctx: ExtensionCommandContext,
-	sessionPath: string,
-	options?: SwitchSessionOptions,
-): Promise<{ cancelled: boolean }> {
-	return await (ctx as SwitchSessionContext).switchSession(sessionPath, options);
-}
-
 export async function chooseSession(
 	ctx: ExtensionCommandContext,
 	workspace: WorkspaceTarget,
@@ -58,7 +46,7 @@ export async function switchToLatestOrCreateSession(
 	const sessions = await listSessions(workspace.cwd);
 	if (sessions.length > 0) {
 		await ctx.waitForIdle();
-		const result = await switchSessionCompat(ctx, sessions[0].path, { withSession: options?.withSession });
+		const result = await ctx.switchSession(sessions[0].path, { withSession: options?.withSession });
 		return { cancelled: result.cancelled, session: sessions[0], created: false };
 	}
 
@@ -69,7 +57,7 @@ export async function switchToLatestOrCreateSession(
 		throw new Error(`Failed to prepare session file for ${workspace.cwd}`);
 	}
 	await persistNewSessionHeader(sessionManager, sessionFile);
-	const result = await switchSessionCompat(ctx, sessionFile, { withSession: options?.withSession });
+	const result = await ctx.switchSession(sessionFile, { withSession: options?.withSession });
 	return { cancelled: result.cancelled, created: true };
 }
 

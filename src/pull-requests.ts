@@ -46,6 +46,7 @@ export async function generatePullRequestDraft(
 		{
 			apiKey: auth.apiKey,
 			headers: auth.headers,
+			signal: ctx.signal,
 		},
 	);
 	if (response.stopReason === "aborted") {
@@ -157,6 +158,7 @@ export async function createPullRequest(
 	headBranch: string,
 	baseBranch: string,
 	draft: PullRequestDraft | null,
+	signal?: AbortSignal,
 ): Promise<{ result: Awaited<ReturnType<typeof exec>>; mode: "generated" | "fill" }> {
 	if (draft) {
 		const result = await exec(
@@ -164,11 +166,14 @@ export async function createPullRequest(
 			"gh",
 			["pr", "create", "--head", headBranch, "--base", baseBranch, "--title", draft.title, "--body", draft.body],
 			cwd,
+			{ signal },
 		);
 		return { result, mode: "generated" };
 	}
 
-	const result = await exec(pi, "gh", ["pr", "create", "--fill", "--head", headBranch, "--base", baseBranch], cwd);
+	const result = await exec(pi, "gh", ["pr", "create", "--fill", "--head", headBranch, "--base", baseBranch], cwd, {
+		signal,
+	});
 	return { result, mode: "fill" };
 }
 

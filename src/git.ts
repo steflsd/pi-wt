@@ -2,6 +2,11 @@ import { spawn } from "node:child_process";
 import { basename, dirname, isAbsolute, resolve, sep } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
 import { safeRealpath } from "./shared.js";
+
+interface CommandExecOptions {
+	signal?: AbortSignal;
+}
+
 import {
 	type BaseBranchSelection,
 	type BranchInfo,
@@ -13,7 +18,7 @@ import {
 	WT_STATE_STATUS_KEY,
 } from "./types.js";
 
-export async function inspectRepo(pi: ExtensionAPI, cwd: string): Promise<RepoState | null> {
+export async function inspectRepo(pi: Pick<ExtensionAPI, "exec">, cwd: string): Promise<RepoState | null> {
 	const topLevel = await exec(pi, "git", ["rev-parse", "--show-toplevel"], cwd);
 	if (topLevel.code !== 0) {
 		return null;
@@ -70,7 +75,7 @@ export async function inspectRepo(pi: ExtensionAPI, cwd: string): Promise<RepoSt
 	};
 }
 
-async function resolveGitCommonDir(pi: ExtensionAPI, repoRoot: string): Promise<string> {
+async function resolveGitCommonDir(pi: Pick<ExtensionAPI, "exec">, repoRoot: string): Promise<string> {
 	const absolute = await exec(pi, "git", ["rev-parse", "--path-format=absolute", "--git-common-dir"], repoRoot);
 	if (absolute.code === 0) {
 		return safeRealpath(absolute.stdout.trim());
@@ -515,8 +520,9 @@ export async function exec(
 	command: string,
 	args: string[],
 	cwd: string,
+	options?: CommandExecOptions,
 ): Promise<ExecResult> {
-	const result = await pi.exec(command, args, { cwd });
+	const result = await pi.exec(command, args, { cwd, signal: options?.signal });
 	return {
 		stdout: result.stdout ?? "",
 		stderr: result.stderr ?? "",
@@ -556,7 +562,12 @@ export async function execProcess(command: string, args: string[], cwd: string):
 	});
 }
 
-export async function execShell(pi: Pick<ExtensionAPI, "exec">, command: string, cwd: string): Promise<ExecResult> {
+export async function execShell(
+	pi: Pick<ExtensionAPI, "exec">,
+	command: string,
+	cwd: string,
+	options?: CommandExecOptions,
+): Promise<ExecResult> {
 	const shell = process.env.SHELL || "bash";
-	return exec(pi, shell, ["-lc", command], cwd);
+	return exec(pi, shell, ["-lc", command], cwd, options);
 }

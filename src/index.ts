@@ -16,6 +16,7 @@ const WORKTREE_STATE_POLL_INTERVAL_MS = 5000;
 export default function (pi: ExtensionAPI) {
 	let worktreeStatePollTimer: ReturnType<typeof setInterval> | undefined;
 	let worktreeStateRefreshInFlight = false;
+	let currentCompletionCwd: string | undefined;
 
 	const stopWorktreeStatePolling = () => {
 		if (!worktreeStatePollTimer) return;
@@ -57,16 +58,20 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.on("session_start", async (_event, ctx) => {
+		currentCompletionCwd = ctx.cwd;
 		await refreshWorktreeState(ctx);
 		startWorktreeStatePolling(ctx);
 	});
 	pi.on("session_shutdown", async () => {
+		currentCompletionCwd = undefined;
 		stopWorktreeStatePolling();
 	});
 	pi.on("turn_end", async (_event, ctx) => {
+		currentCompletionCwd = ctx.cwd;
 		await refreshWorktreeState(ctx);
 	});
 	pi.on("user_bash", async (event, ctx) => {
+		currentCompletionCwd = ctx.cwd;
 		await refreshWorktreeState(ctx, event.cwd);
 	});
 	pi.on("before_agent_start", async (event, ctx) => {
@@ -86,8 +91,9 @@ export default function (pi: ExtensionAPI) {
 
 	pi.registerCommand("wt", {
 		description: "Worktree helpers: switch/create worktrees, show status, land, rebase, and manage PRs",
-		getArgumentCompletions: (prefix) => getWtArgumentCompletions(prefix),
+		getArgumentCompletions: async (prefix) => getWtArgumentCompletions(pi, currentCompletionCwd, prefix),
 		handler: async (args, ctx) => {
+			currentCompletionCwd = ctx.cwd;
 			try {
 				const command = parseWtCommand(args);
 				if (!ctx.hasUI && ["workspace", "land", "rebase", "pr"].includes(command.kind)) {

@@ -31,6 +31,18 @@ export function reportMessage(
 	console.log(message);
 }
 
+export function cancelIfAborted(
+	ctx: Pick<ExtensionContext, "hasUI" | "ui" | "signal">,
+	message = "Cancelled",
+): boolean {
+	if (!ctx.signal?.aborted) {
+		return false;
+	}
+
+	reportMessage(ctx, message, "info");
+	return true;
+}
+
 export function formatChangesPreview(changes: string[], limit = 10): string {
 	const preview = changes.slice(0, limit).join("\n");
 	if (!preview) {

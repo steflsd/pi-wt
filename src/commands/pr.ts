@@ -12,6 +12,7 @@ import {
 	summarizeCommandOutput,
 } from "../git.js";
 import { createPullRequest, generatePullRequestDraft, summarizeCreatePullRequestResult } from "../pull-requests.js";
+import { cancelIfAborted } from "../shared.js";
 import type { ExecResult, PullRequestDraft } from "../types.js";
 
 export async function handlePrCommand(
@@ -89,10 +90,17 @@ export async function handlePrCommand(
 	}
 
 	await ctx.waitForIdle();
+	if (cancelIfAborted(ctx)) {
+		return;
+	}
+
 	try {
 		if (publishPlan.commandArgs) {
 			ctx.ui.setStatus("pi-wt", `Publishing ${readyFacts.branch}...`);
-			const pushResult = await exec(pi, "git", publishPlan.commandArgs, repo.cwd);
+			const pushResult = await exec(pi, "git", publishPlan.commandArgs, repo.cwd, { signal: ctx.signal });
+			if (cancelIfAborted(ctx)) {
+				return;
+			}
 			if (pushResult.code !== 0) {
 				ctx.ui.notify(
 					[
@@ -127,12 +135,25 @@ export async function handlePrCommand(
 		try {
 			ctx.ui.setStatus("pi-wt", `Drafting PR for ${readyFacts.branch}...`);
 			draft = await generatePullRequestDraft(pi, ctx, repo, readyFacts.baseBranch);
+			if (cancelIfAborted(ctx)) {
+				return;
+			}
 		} catch {
 			draft = null;
 		}
 
 		ctx.ui.setStatus("pi-wt", `Creating PR for ${readyFacts.branch}...`);
-		const created = await createPullRequest(pi, repo.cwd, readyFacts.branch, readyFacts.baseBranch.name, draft);
+		const created = await createPullRequest(
+			pi,
+			repo.cwd,
+			readyFacts.branch,
+			readyFacts.baseBranch.name,
+			draft,
+			ctx.signal,
+		);
+		if (cancelIfAborted(ctx)) {
+			return;
+		}
 		if (created.result.code === 0) {
 			ctx.ui.notify(
 				[

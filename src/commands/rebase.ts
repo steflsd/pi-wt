@@ -2,6 +2,7 @@ import type { ExtensionAPI, ExtensionCommandContext } from "@mariozechner/pi-cod
 import { findWorktreeByBranch, inspectCurrentBranchFacts } from "../branch-facts.js";
 import { evaluateRebaseReadiness, formatRebaseReadinessMessage, isReadyBranchFacts } from "../command-checks.js";
 import { exec, inspectRepo, readWorktreeChanges, refreshWorktreeStateStatus, summarizeCommandOutput } from "../git.js";
+import { cancelIfAborted } from "../shared.js";
 
 export async function handleRebaseCommand(
 	pi: ExtensionAPI,
@@ -55,9 +56,16 @@ export async function handleRebaseCommand(
 	}
 
 	await ctx.waitForIdle();
+	if (cancelIfAborted(ctx)) {
+		return;
+	}
+
 	ctx.ui.setStatus("pi-wt", `Rebasing ${readyFacts.branch} onto ${readyFacts.baseBranch.ref}...`);
 	try {
-		const result = await exec(pi, "git", ["rebase", readyFacts.baseBranch.ref], repo.cwd);
+		const result = await exec(pi, "git", ["rebase", readyFacts.baseBranch.ref], repo.cwd, { signal: ctx.signal });
+		if (cancelIfAborted(ctx)) {
+			return;
+		}
 		if (result.code === 0) {
 			const output = summarizeCommandOutput(result);
 			ctx.ui.notify(

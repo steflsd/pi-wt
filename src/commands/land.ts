@@ -8,6 +8,7 @@ import {
 	isReadyLandingFacts,
 	type ReadyLandingFacts,
 } from "../landing.js";
+import { cancelIfAborted } from "../shared.js";
 import type { RepoState } from "../types.js";
 import { archiveWorktreeAtPathFlow, getConfiguredWorktreeRoot, readProjectWorktreeSettings } from "../worktrees.js";
 
@@ -67,10 +68,19 @@ async function landWorktreeFlow(
 	}
 
 	await ctx.waitForIdle();
+	if (cancelIfAborted(ctx)) {
+		return;
+	}
+
 	let replacedSession = false;
 	try {
 		ctx.ui.setStatus("pi-wt", `Rebasing ${facts.featureBranch} onto ${facts.baseBranch.ref}...`);
-		const rebased = await exec(pi, "git", ["rebase", facts.baseBranch.ref], facts.featureWorktree.path);
+		const rebased = await exec(pi, "git", ["rebase", facts.baseBranch.ref], facts.featureWorktree.path, {
+			signal: ctx.signal,
+		});
+		if (cancelIfAborted(ctx)) {
+			return;
+		}
 		if (rebased.code !== 0) {
 			ctx.ui.notify(
 				[
@@ -85,7 +95,18 @@ async function landWorktreeFlow(
 
 		if (facts.destination.requiresCheckout) {
 			ctx.ui.setStatus("pi-wt", `Checking out ${facts.baseBranch.name}...`);
-			const checkedOut = await exec(pi, "git", ["checkout", facts.baseBranch.name], facts.destination.workspace.cwd);
+			const checkedOut = await exec(
+				pi,
+				"git",
+				["checkout", facts.baseBranch.name],
+				facts.destination.workspace.cwd,
+				{
+					signal: ctx.signal,
+				},
+			);
+			if (cancelIfAborted(ctx)) {
+				return;
+			}
 			if (checkedOut.code !== 0) {
 				ctx.ui.notify(
 					[
@@ -104,7 +125,11 @@ async function landWorktreeFlow(
 			"git",
 			["merge", "--ff-only", facts.featureBranch],
 			facts.destination.workspace.cwd,
+			{ signal: ctx.signal },
 		);
+		if (cancelIfAborted(ctx)) {
+			return;
+		}
 		if (merged.code !== 0) {
 			ctx.ui.notify(
 				[
@@ -162,6 +187,10 @@ async function ensureLandingReady(
 	worktreePath: string,
 ): Promise<ReadyLandingFacts | null> {
 	for (let attempt = 0; attempt < 2; attempt++) {
+		if (cancelIfAborted(ctx)) {
+			return null;
+		}
+
 		const facts = await inspectLandingFacts(pi, repo, worktreePath, {
 			includePullRequest: true,
 			includeMergeState: true,
@@ -204,6 +233,9 @@ async function ensureLandingReady(
 					promptTitle: `Commit message · ${facts.featureBranch}`,
 				},
 			);
+			if (cancelIfAborted(ctx)) {
+				return null;
+			}
 			if (!committed) {
 				return null;
 			}

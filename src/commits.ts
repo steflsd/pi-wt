@@ -9,6 +9,7 @@ import {
 	ExtensionEditorComponent,
 } from "@mariozechner/pi-coding-agent";
 import { exec, summarizeCommandOutput } from "./git.js";
+import { cancelIfAborted } from "./shared.js";
 import type { BaseBranchSelection, CommitDraft, RepoState } from "./types.js";
 
 const PROJECT_COMMIT_PROMPT_PATH = ".pi/wt/commit.md";
@@ -53,6 +54,7 @@ export async function generateCommitDraft(
 		{
 			apiKey: auth.apiKey,
 			headers: auth.headers,
+			signal: ctx.signal,
 		},
 	);
 	if (response.stopReason === "aborted") {
@@ -147,7 +149,10 @@ export async function commitAllChangesWithDraft(
 		await writeFile(messagePath, `${commitMessage.trimEnd()}\n`, "utf8");
 
 		ctx.ui.setStatus("pi-wt", `Staging changes for ${featureBranch}...`);
-		const staged = await exec(pi, "git", ["add", "-A"], cwd);
+		const staged = await exec(pi, "git", ["add", "-A"], cwd, { signal: ctx.signal });
+		if (cancelIfAborted(ctx)) {
+			return false;
+		}
 		if (staged.code !== 0) {
 			ctx.ui.notify(
 				[`Failed to stage changes in ${cwd}.`, summarizeCommandOutput(staged) || "git add -A failed"].join("\n\n"),
@@ -157,7 +162,10 @@ export async function commitAllChangesWithDraft(
 		}
 
 		ctx.ui.setStatus("pi-wt", `${options?.actionLabel ?? "Committing changes"} in ${featureBranch}...`);
-		const committed = await exec(pi, "git", ["commit", "-F", messagePath], cwd);
+		const committed = await exec(pi, "git", ["commit", "-F", messagePath], cwd, { signal: ctx.signal });
+		if (cancelIfAborted(ctx)) {
+			return false;
+		}
 		if (committed.code !== 0) {
 			ctx.ui.notify(
 				[

@@ -3,7 +3,7 @@
 	"version": "0.0.1",
 	"private": true,
 	"type": "module",
-	"packageManager": "pnpm@10.33.0",
+	"packageManager": "pnpm@10.33.2+sha512.a90faf6feeab71ad6c6e57f94e0fe1a12f5dcc22cd754db40ae9593eb6a3e0b6b12e3540218bb37ae083404b1f2ce6db2a4121e979829b4aff94b99f49da1cf8",
 	"description": "Worktree switcher extension for Pi Coding Agent",
 	"repository": {
 		"type": "git",
@@ -33,9 +33,9 @@
 		]
 	},
 	"peerDependencies": {
-		"@mariozechner/pi-ai": "*",
-		"@mariozechner/pi-coding-agent": "*",
-		"@mariozechner/pi-tui": "*"
+		"@mariozechner/pi-ai": "^0.70.0",
+		"@mariozechner/pi-coding-agent": "^0.70.0",
+		"@mariozechner/pi-tui": "^0.70.0"
 	},
 	"devDependencies": {
 		"@biomejs/biome": "2.4.13",

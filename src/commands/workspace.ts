@@ -7,8 +7,8 @@ import {
 	describeSession,
 	listSessions,
 	persistNewSessionHeader,
-	switchSessionCompat,
 } from "../sessions.js";
+import { cancelIfAborted } from "../shared.js";
 import type { RepoState, WorkspaceTarget } from "../types.js";
 import {
 	archiveWorktreeAtPathFlow,
@@ -73,6 +73,9 @@ export async function handleWorkspaceCommand(pi: ExtensionAPI, ctx: ExtensionCom
 			if (!created) {
 				return;
 			}
+			if (cancelIfAborted(ctx)) {
+				return;
+			}
 
 			const shouldContinueSessionInNewTerminal = shouldContinueSessionForNewWorktree(ctx, repo);
 			if (shouldContinueSessionInNewTerminal) {
@@ -94,8 +97,11 @@ export async function handleWorkspaceCommand(pi: ExtensionAPI, ctx: ExtensionCom
 			return;
 		}
 		await ctx.waitForIdle();
+		if (cancelIfAborted(ctx)) {
+			return;
+		}
 		const message = `Switched to ${workspaceSummary(workspace)} · ${describeSession(selected)}`;
-		await switchSessionCompat(ctx, selected.path, {
+		await ctx.switchSession(selected.path, {
 			withSession: async (replacementCtx) => {
 				replacementCtx.ui.notify(message, "info");
 			},
@@ -104,6 +110,9 @@ export async function handleWorkspaceCommand(pi: ExtensionAPI, ctx: ExtensionCom
 	}
 
 	await ctx.waitForIdle();
+	if (cancelIfAborted(ctx)) {
+		return;
+	}
 	const sessionManager = SessionManager.create(workspace.cwd);
 	const sessionFile = sessionManager.getSessionFile();
 	if (!sessionFile) {
@@ -112,7 +121,7 @@ export async function handleWorkspaceCommand(pi: ExtensionAPI, ctx: ExtensionCom
 	}
 	await persistNewSessionHeader(sessionManager, sessionFile);
 	const message = `Created new session in ${workspaceSummary(workspace)}`;
-	await switchSessionCompat(ctx, sessionFile, {
+	await ctx.switchSession(sessionFile, {
 		withSession: async (replacementCtx) => {
 			replacementCtx.ui.notify(message, "info");
 		},
