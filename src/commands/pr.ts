@@ -132,7 +132,7 @@ export async function handlePrCommand(
 		}
 
 		ctx.ui.setStatus("pi-wt", `Creating PR for ${readyFacts.branch}...`);
-		const created = await createPullRequest(pi, repo.cwd, readyFacts.baseBranch.name, draft);
+		const created = await createPullRequest(pi, repo.cwd, readyFacts.branch, readyFacts.baseBranch.name, draft);
 		if (created.result.code === 0) {
 			ctx.ui.notify(
 				[

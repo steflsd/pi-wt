@@ -15,7 +15,7 @@ describe("resolveArchiveMergeAssessment", () => {
 		const result = resolveArchiveMergeAssessment(input);
 
 		// Assert
-		expect(result).toEqual({ deleteBranch: true, mergeState: "merged" });
+		expect(result).toEqual({ deleteBranch: true, mergeState: "merged-by-git" });
 	});
 
 	test("marks a branch as merged when the current head already has a merged PR into the target", () => {
@@ -31,7 +31,7 @@ describe("resolveArchiveMergeAssessment", () => {
 		const result = resolveArchiveMergeAssessment(input);
 
 		// Assert
-		expect(result).toEqual({ deleteBranch: true, mergeState: "merged" });
+		expect(result).toEqual({ deleteBranch: true, mergeState: "merged-by-pr" });
 	});
 
 	test("keeps a branch when neither Git ancestry nor PR state confirms the merge", () => {

@@ -509,7 +509,12 @@ function pathContains(parentPath: string, path: string): boolean {
 	return path === parentPath || path.startsWith(`${parentPath}${sep}`);
 }
 
-export async function exec(pi: ExtensionAPI, command: string, args: string[], cwd: string): Promise<ExecResult> {
+export async function exec(
+	pi: Pick<ExtensionAPI, "exec">,
+	command: string,
+	args: string[],
+	cwd: string,
+): Promise<ExecResult> {
 	const result = await pi.exec(command, args, { cwd });
 	return {
 		stdout: result.stdout ?? "",
@@ -518,7 +523,7 @@ export async function exec(pi: ExtensionAPI, command: string, args: string[], cw
 	};
 }
 
-export async function execShell(pi: ExtensionAPI, command: string, cwd: string): Promise<ExecResult> {
+export async function execShell(pi: Pick<ExtensionAPI, "exec">, command: string, cwd: string): Promise<ExecResult> {
 	const shell = process.env.SHELL || "bash";
 	return exec(pi, shell, ["-lc", command], cwd);
 }

@@ -84,7 +84,7 @@ async function readPullRequestPromptTemplate(repoRoot: string): Promise<{ path: 
 }
 
 async function buildPullRequestPrompt(
-	pi: ExtensionAPI,
+	pi: Pick<ExtensionAPI, "exec">,
 	repo: RepoState,
 	baseBranch: BaseBranchSelection,
 	template: string,
@@ -129,7 +129,7 @@ function parsePullRequestDraft(output: string): { title: string; body: string } 
 	return { title, body };
 }
 
-async function readGitText(pi: ExtensionAPI, cwd: string, args: string[]): Promise<string> {
+async function readGitText(pi: Pick<ExtensionAPI, "exec">, cwd: string, args: string[]): Promise<string> {
 	const result = await exec(pi, "git", args, cwd);
 	return result.code === 0 ? result.stdout.trim() : "";
 }
@@ -152,8 +152,9 @@ function truncateBlock(text: string, maxChars: number): string {
 }
 
 export async function createPullRequest(
-	pi: ExtensionAPI,
+	pi: Pick<ExtensionAPI, "exec">,
 	cwd: string,
+	headBranch: string,
 	baseBranch: string,
 	draft: PullRequestDraft | null,
 ): Promise<{ result: Awaited<ReturnType<typeof exec>>; mode: "generated" | "fill" }> {
@@ -161,13 +162,13 @@ export async function createPullRequest(
 		const result = await exec(
 			pi,
 			"gh",
-			["pr", "create", "--base", baseBranch, "--title", draft.title, "--body", draft.body],
+			["pr", "create", "--head", headBranch, "--base", baseBranch, "--title", draft.title, "--body", draft.body],
 			cwd,
 		);
 		return { result, mode: "generated" };
 	}
 
-	const result = await exec(pi, "gh", ["pr", "create", "--fill", "--base", baseBranch], cwd);
+	const result = await exec(pi, "gh", ["pr", "create", "--fill", "--head", headBranch, "--base", baseBranch], cwd);
 	return { result, mode: "fill" };
 }
 

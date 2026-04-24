@@ -6,12 +6,12 @@ import { DynamicBorder } from "@mariozechner/pi-coding-agent";
 import { Container, matchesKey, type SelectItem, SelectList, Text } from "@mariozechner/pi-tui";
 import { hasMergedPullRequestAtHead } from "./branch-facts.js";
 import {
+	detectBaseBranch,
 	exec,
 	execShell,
 	isBranchMergedInto,
 	normalizeBranchName,
 	readCurrentPr,
-	readGitConfig,
 	readWorktreeChanges,
 	unsetGitConfig,
 	writeGitConfig,
@@ -42,7 +42,7 @@ interface ArchiveCandidate {
 	changes: string[];
 	deleteBranch: boolean;
 	mergeTarget: string | null;
-	mergeState: "merged" | "not-merged" | "unknown";
+	mergeState: "merged-by-git" | "merged-by-pr" | "not-merged" | "unknown";
 }
 
 interface WorkspacePickerItem {
@@ -827,19 +827,29 @@ async function listArchiveCandidates(
 	return Promise.all(
 		worktrees.map(async (worktree) => {
 			const branch = worktree.branch;
-			const configuredTarget = branch
-				? await readGitConfig(pi, repo.mainCheckoutPath, `branch.${branch}.wt-parent`)
+			const pullRequest = branch ? await readCurrentPr(pi, worktree.path) : null;
+			const baseBranch = branch
+				? await detectBaseBranch(pi, repo, worktree.path, branch, undefined, { pullRequest })
 				: null;
-			const mergeTarget = branch ? (configuredTarget ?? repo.defaultBranch) : null;
+			const mergeTarget = baseBranch?.name ?? null;
 			const shouldCheckMerge = Boolean(
-				branch && mergeTarget && normalizeBranchName(branch) !== normalizeBranchName(mergeTarget),
+				branch && baseBranch && normalizeBranchName(branch) !== normalizeBranchName(baseBranch.name),
 			);
-			const mergedIntoTarget = shouldCheckMerge
-				? await isBranchMergedInto(pi, repo.mainCheckoutPath, branch as string, mergeTarget as string)
-				: null;
+			const [mergedIntoTarget, currentHead] = await Promise.all([
+				shouldCheckMerge
+					? isBranchMergedInto(pi, repo.mainCheckoutPath, branch as string, baseBranch?.ref as string)
+					: Promise.resolve(null),
+				shouldCheckMerge && pullRequest?.state === "MERGED" && pullRequest.headRefOid
+					? readArchiveHead(pi, worktree.path)
+					: Promise.resolve(null),
+			]);
 			const mergedPullRequestAtHead =
-				shouldCheckMerge && mergedIntoTarget !== true
-					? await hasMergedArchivePullRequest(pi, worktree.path, mergeTarget as string)
+				shouldCheckMerge && baseBranch
+					? hasMergedPullRequestAtHead({
+							pullRequest,
+							currentHead,
+							baseBranch,
+						})
 					: false;
 			const mergeAssessment = resolveArchiveMergeAssessment({
 				branch,
@@ -853,7 +863,7 @@ async function listArchiveCandidates(
 				pathLabel: relative(resolvedWorktreeRoot, worktree.path) || basename(worktree.path),
 				changes,
 				deleteBranch: mergeAssessment.deleteBranch,
-				mergeTarget: mergeTarget ? normalizeBranchName(mergeTarget) : null,
+				mergeTarget,
 				mergeState: mergeAssessment.mergeState,
 			} satisfies ArchiveCandidate;
 		}),
@@ -874,26 +884,16 @@ export function resolveArchiveMergeAssessment({
 	if (!branch || !mergeTarget || normalizeBranchName(branch) === normalizeBranchName(mergeTarget)) {
 		return { deleteBranch: false, mergeState: "unknown" };
 	}
-	if (mergedIntoTarget === true || mergedPullRequestAtHead) {
-		return { deleteBranch: true, mergeState: "merged" };
+	if (mergedIntoTarget === true) {
+		return { deleteBranch: true, mergeState: "merged-by-git" };
+	}
+	if (mergedPullRequestAtHead) {
+		return { deleteBranch: true, mergeState: "merged-by-pr" };
 	}
 	if (mergedIntoTarget === false) {
 		return { deleteBranch: false, mergeState: "not-merged" };
 	}
 	return { deleteBranch: false, mergeState: "unknown" };
-}
-
-async function hasMergedArchivePullRequest(pi: ExtensionAPI, cwd: string, mergeTarget: string): Promise<boolean> {
-	const [pullRequest, currentHead] = await Promise.all([readCurrentPr(pi, cwd), readArchiveHead(pi, cwd)]);
-	return hasMergedPullRequestAtHead({
-		pullRequest,
-		currentHead,
-		baseBranch: {
-			name: normalizeBranchName(mergeTarget),
-			ref: mergeTarget,
-			source: "archive target",
-		},
-	});
 }
 
 async function readArchiveHead(pi: ExtensionAPI, cwd: string): Promise<string | null> {
@@ -920,14 +920,17 @@ function describeArchiveBranchAction(candidate: ArchiveCandidate): string {
 	if (!candidate.worktree.branch) {
 		return "no (detached HEAD)";
 	}
-	if (candidate.deleteBranch && candidate.mergeTarget) {
+	if (candidate.mergeState === "merged-by-pr" && candidate.mergeTarget) {
+		return `yes (safe delete: merged PR into ${candidate.mergeTarget})`;
+	}
+	if (candidate.mergeState === "merged-by-git" && candidate.mergeTarget) {
 		return `yes (safe delete after merge into ${candidate.mergeTarget})`;
 	}
 	if (candidate.mergeState === "not-merged" && candidate.mergeTarget) {
-		return `no (${candidate.worktree.branch} is not merged into ${candidate.mergeTarget})`;
+		return `no (no merged PR or direct merge into ${candidate.mergeTarget} was detected)`;
 	}
 	if (candidate.mergeTarget) {
-		return `no (could not verify merge into ${candidate.mergeTarget})`;
+		return `no (could not verify a merged PR or direct merge into ${candidate.mergeTarget})`;
 	}
 	return "no (no merge target could be determined)";
 }
