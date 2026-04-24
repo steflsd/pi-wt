@@ -7,6 +7,7 @@ import {
 	describeSession,
 	listSessions,
 	persistNewSessionHeader,
+	switchSessionCompat,
 } from "../sessions.js";
 import type { RepoState, WorkspaceTarget } from "../types.js";
 import {
@@ -93,10 +94,12 @@ export async function handleWorkspaceCommand(pi: ExtensionAPI, ctx: ExtensionCom
 			return;
 		}
 		await ctx.waitForIdle();
-		const result = await ctx.switchSession(selected.path);
-		if (!result.cancelled) {
-			ctx.ui.notify(`Switched to ${workspaceSummary(workspace)} · ${describeSession(selected)}`, "info");
-		}
+		const message = `Switched to ${workspaceSummary(workspace)} · ${describeSession(selected)}`;
+		await switchSessionCompat(ctx, selected.path, {
+			withSession: async (replacementCtx) => {
+				replacementCtx.ui.notify(message, "info");
+			},
+		});
 		return;
 	}
 
@@ -108,10 +111,12 @@ export async function handleWorkspaceCommand(pi: ExtensionAPI, ctx: ExtensionCom
 		return;
 	}
 	await persistNewSessionHeader(sessionManager, sessionFile);
-	const result = await ctx.switchSession(sessionFile);
-	if (!result.cancelled) {
-		ctx.ui.notify(`Created new session in ${workspaceSummary(workspace)}`, "info");
-	}
+	const message = `Created new session in ${workspaceSummary(workspace)}`;
+	await switchSessionCompat(ctx, sessionFile, {
+		withSession: async (replacementCtx) => {
+			replacementCtx.ui.notify(message, "info");
+		},
+	});
 }
 
 function shouldContinueSessionForNewWorktree(ctx: ExtensionCommandContext, repo: RepoState): boolean {

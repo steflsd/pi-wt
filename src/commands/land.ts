@@ -8,8 +8,6 @@ import {
 	isReadyLandingFacts,
 	type ReadyLandingFacts,
 } from "../landing.js";
-import { switchToLatestOrCreateSession } from "../sessions.js";
-import { safeRealpath } from "../shared.js";
 import type { RepoState } from "../types.js";
 import { archiveWorktreeAtPathFlow, getConfiguredWorktreeRoot, readProjectWorktreeSettings } from "../worktrees.js";
 
@@ -69,6 +67,7 @@ async function landWorktreeFlow(
 	}
 
 	await ctx.waitForIdle();
+	let replacedSession = false;
 	try {
 		ctx.ui.setStatus("pi-wt", `Rebasing ${facts.featureBranch} onto ${facts.baseBranch.ref}...`);
 		const rebased = await exec(pi, "git", ["rebase", facts.baseBranch.ref], facts.featureWorktree.path);
@@ -82,18 +81,6 @@ async function landWorktreeFlow(
 				"error",
 			);
 			return;
-		}
-
-		if (
-			safeRealpath(facts.destination.workspace.cwd) !== safeRealpath(facts.featureWorktree.path) &&
-			safeRealpath(ctx.cwd) !== safeRealpath(facts.destination.workspace.cwd)
-		) {
-			ctx.ui.setStatus("pi-wt", `Switching to ${facts.destination.workspace.cwd}...`);
-			const switched = await switchToLatestOrCreateSession(ctx, facts.destination.workspace);
-			if (switched.cancelled) {
-				ctx.ui.notify("Cancelled", "info");
-				return;
-			}
 		}
 
 		if (facts.destination.requiresCheckout) {
@@ -138,27 +125,33 @@ async function landWorktreeFlow(
 			}
 
 			ctx.ui.setStatus("pi-wt", `Archiving ${facts.featureBranch}...`);
-			const archived = await archiveWorktreeAtPathFlow(
+			const archiveResult = await archiveWorktreeAtPathFlow(
 				pi,
 				ctx,
 				refreshedRepo,
 				getConfiguredWorktreeRoot(pi),
 				facts.featureWorktree.path,
-				{ skipConfirmation: true, skipSuccessNotification: true },
+				{ skipConfirmation: true, skipSuccessNotification: !facts.featureWorktree.isCurrent },
 			);
+			replacedSession = archiveResult.replacedSession;
+			if (replacedSession) {
+				return;
+			}
 			ctx.ui.notify(
-				archived
+				archiveResult.archived
 					? `Landed ${facts.featureBranch} into ${facts.baseBranch.name} and archived the worktree.`
 					: `Landed ${facts.featureBranch} into ${facts.baseBranch.name}.`,
-				archived ? "info" : "warning",
+				archiveResult.archived ? "info" : "warning",
 			);
 			return;
 		}
 
 		ctx.ui.notify(`Landed ${facts.featureBranch} into ${facts.baseBranch.name}.`, "info");
 	} finally {
-		ctx.ui.setStatus("pi-wt", undefined);
-		await refreshWorktreeStateStatus(pi, ctx);
+		if (!replacedSession) {
+			ctx.ui.setStatus("pi-wt", undefined);
+			await refreshWorktreeStateStatus(pi, ctx);
+		}
 	}
 }
 

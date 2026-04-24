@@ -8,6 +8,7 @@ import { hasMergedPullRequestAtHead } from "./branch-facts.js";
 import {
 	detectBaseBranch,
 	exec,
+	execProcess,
 	execShell,
 	isBranchMergedInto,
 	normalizeBranchName,
@@ -53,6 +54,12 @@ interface WorkspacePickerItem {
 interface CreateWorktreeModeSelection {
 	mode: "clean" | "move-current-changes";
 	changeCount: number;
+}
+
+interface ArchiveSwitchPlan {
+	workspace: WorkspaceTarget;
+	baseBranch: string;
+	requiresCheckout: boolean;
 }
 
 interface StashedWorktreeChanges {
@@ -353,13 +360,13 @@ export async function archiveWorktreeAtPathFlow(
 	worktreeRoot: string,
 	worktreePath: string,
 	options?: { skipConfirmation?: boolean; skipSuccessNotification?: boolean },
-): Promise<boolean> {
+): Promise<{ archived: boolean; replacedSession: boolean }> {
 	const resolvedWorktreeRoot = resolveWorktreeRoot(repo.mainCheckoutPath, worktreeRoot);
 	const candidates = await listArchiveCandidates(pi, repo, resolvedWorktreeRoot);
 	const candidate = candidates.find((entry) => entry.worktree.path === safeRealpath(worktreePath));
 	if (!candidate) {
 		ctx.ui.notify(`Could not find an archivable linked worktree at ${worktreePath}.`, "warning");
-		return false;
+		return { archived: false, replacedSession: false };
 	}
 	return archiveWorktreeCandidateFlow(pi, ctx, repo, candidate, options);
 }
@@ -370,7 +377,7 @@ async function archiveWorktreeCandidateFlow(
 	repo: RepoState,
 	candidate: ArchiveCandidate,
 	options?: { skipConfirmation?: boolean; skipSuccessNotification?: boolean },
-): Promise<boolean> {
+): Promise<{ archived: boolean; replacedSession: boolean }> {
 	if (candidate.changes.length > 0) {
 		ctx.ui.notify(
 			[
@@ -379,7 +386,7 @@ async function archiveWorktreeCandidateFlow(
 			].join("\n"),
 			"warning",
 		);
-		return false;
+		return { archived: false, replacedSession: false };
 	}
 
 	const switchPlan = candidate.worktree.isCurrent ? resolveArchiveSwitchPlan(repo, candidate) : null;
@@ -390,7 +397,7 @@ async function archiveWorktreeCandidateFlow(
 				: `Could not determine a base branch for ${candidate.worktree.path}.`,
 			"error",
 		);
-		return false;
+		return { archived: false, replacedSession: false };
 	}
 	if (switchPlan?.requiresCheckout) {
 		const destinationChanges = await readWorktreeChanges(pi, switchPlan.workspace.cwd, true);
@@ -402,7 +409,7 @@ async function archiveWorktreeCandidateFlow(
 				].join("\n"),
 				"warning",
 			);
-			return false;
+			return { archived: false, replacedSession: false };
 		}
 	}
 
@@ -416,20 +423,56 @@ async function archiveWorktreeCandidateFlow(
 		];
 		const confirmed = await ctx.ui.confirm("Archive worktree", confirmationLines.join("\n"));
 		if (!confirmed) {
-			return false;
+			return { archived: false, replacedSession: false };
 		}
 	}
 
 	if (switchPlan) {
+		let archived = false;
 		ctx.ui.setStatus("pi-wt", "Switching away before archiving...");
-		const switched = await switchToLatestOrCreateSession(ctx, switchPlan.workspace);
+		const switched = await switchToLatestOrCreateSession(ctx, switchPlan.workspace, {
+			withSession: async (replacementCtx) => {
+				archived = await finalizeArchiveWorktreeCandidate(
+					replacementCtx,
+					repo,
+					candidate,
+					switchPlan,
+					options,
+					(command, args, cwd) => execProcess(command, args, cwd),
+				);
+			},
+		});
 		if (switched.cancelled) {
 			ctx.ui.setStatus("pi-wt", undefined);
-			return false;
+			return { archived: false, replacedSession: false };
 		}
-		if (switchPlan.requiresCheckout) {
+		return { archived, replacedSession: true };
+	}
+
+	return {
+		archived: await finalizeArchiveWorktreeCandidate(ctx, repo, candidate, null, options, (command, args, cwd) =>
+			exec(pi, command, args, cwd),
+		),
+		replacedSession: false,
+	};
+}
+
+async function finalizeArchiveWorktreeCandidate(
+	ctx: ExtensionCommandContext,
+	repo: RepoState,
+	candidate: ArchiveCandidate,
+	switchPlan: ArchiveSwitchPlan | null,
+	options: { skipConfirmation?: boolean; skipSuccessNotification?: boolean } | undefined,
+	run: (
+		command: string,
+		args: string[],
+		cwd: string,
+	) => Promise<{ stdout: string; stderr: string; code: number | null }>,
+): Promise<boolean> {
+	try {
+		if (switchPlan?.requiresCheckout) {
 			ctx.ui.setStatus("pi-wt", `Checking out base branch ${switchPlan.baseBranch}...`);
-			const checkedOut = await exec(pi, "git", ["checkout", switchPlan.baseBranch], switchPlan.workspace.cwd);
+			const checkedOut = await run("git", ["checkout", switchPlan.baseBranch], switchPlan.workspace.cwd);
 			if (checkedOut.code !== 0) {
 				ctx.ui.notify(
 					[
@@ -440,21 +483,18 @@ async function archiveWorktreeCandidateFlow(
 					].join("\n"),
 					"error",
 				);
-				ctx.ui.setStatus("pi-wt", undefined);
 				return false;
 			}
 		}
-	}
 
-	ctx.ui.setStatus("pi-wt", `Archiving ${workspaceBranchLabel(candidate.worktree)}...`);
-	try {
-		const removed = await exec(pi, "git", ["worktree", "remove", candidate.worktree.path], repo.mainCheckoutPath);
+		ctx.ui.setStatus("pi-wt", `Archiving ${workspaceBranchLabel(candidate.worktree)}...`);
+		const removed = await run("git", ["worktree", "remove", candidate.worktree.path], repo.mainCheckoutPath);
 		if (removed.code !== 0) {
 			throw new Error(removed.stderr.trim() || `Failed to remove worktree ${candidate.worktree.path}`);
 		}
 
 		if (candidate.deleteBranch && candidate.worktree.branch) {
-			const deleted = await exec(pi, "git", ["branch", "-d", candidate.worktree.branch], repo.mainCheckoutPath);
+			const deleted = await run("git", ["branch", "-d", candidate.worktree.branch], repo.mainCheckoutPath);
 			if (deleted.code !== 0) {
 				ctx.ui.notify(
 					[
@@ -773,10 +813,7 @@ export function workspaceSummary(workspace: WorkspaceTarget): string {
 	return `${prefix} · ${branch}`;
 }
 
-function resolveArchiveSwitchPlan(
-	repo: RepoState,
-	candidate: ArchiveCandidate,
-): { workspace: WorkspaceTarget; baseBranch: string; requiresCheckout: boolean } | null {
+function resolveArchiveSwitchPlan(repo: RepoState, candidate: ArchiveCandidate): ArchiveSwitchPlan | null {
 	const baseBranch = candidate.mergeTarget;
 	if (!baseBranch) {
 		return null;

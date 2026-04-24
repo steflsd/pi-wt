@@ -1,3 +1,4 @@
+import { spawn } from "node:child_process";
 import { basename, dirname, isAbsolute, resolve, sep } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
 import { safeRealpath } from "./shared.js";
@@ -521,6 +522,38 @@ export async function exec(
 		stderr: result.stderr ?? "",
 		code: result.code ?? null,
 	};
+}
+
+export async function execProcess(command: string, args: string[], cwd: string): Promise<ExecResult> {
+	return await new Promise<ExecResult>((resolve) => {
+		const child = spawn(command, args, {
+			cwd,
+			env: process.env,
+			stdio: ["ignore", "pipe", "pipe"],
+		});
+
+		let stdout = "";
+		let stderr = "";
+		let settled = false;
+		const finish = (result: ExecResult) => {
+			if (settled) return;
+			settled = true;
+			resolve(result);
+		};
+
+		child.stdout?.on("data", (chunk: Buffer | string) => {
+			stdout += chunk.toString();
+		});
+		child.stderr?.on("data", (chunk: Buffer | string) => {
+			stderr += chunk.toString();
+		});
+		child.on("error", (error) => {
+			finish({ stdout, stderr: error.message, code: 1 });
+		});
+		child.on("close", (code) => {
+			finish({ stdout, stderr, code });
+		});
+	});
 }
 
 export async function execShell(pi: Pick<ExtensionAPI, "exec">, command: string, cwd: string): Promise<ExecResult> {
